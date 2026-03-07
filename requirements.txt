@@ -1,0 +1,7 @@
+pandas
+numpy
+scikit-learn
+pyyaml
+jupyter
+notebook
+tqdm

@@ -1,0 +1,12 @@
+project_root: .
+data_raw: data/raw
+data_interim: data/interim
+data_processed: data/processed
+models_dir: models
+artifacts_dir: artifacts
+reports_dir: reports
+
+validation_dir: data/raw/validation
+test_dir: data/raw/test
+gold_dir: data/raw/gold
+samples_dir: data/raw/samples

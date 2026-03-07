@@ -1,0 +1,17 @@
+intent_mode: rules
+
+rule_based:
+  case_sensitive: false
+
+speaker_id:
+  similarity_threshold: 0.65
+
+asr:
+  enabled: false
+
+diarization:
+  enabled: false
+
+ml_intent:
+  enabled: false
+  model_name: null
