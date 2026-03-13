@@ -218,6 +218,8 @@ python -m src.rule_based_intent \
 
 ## Этап 4. Подъём ASR + diarization на коротком фрагменте фильма
 
+Важно иметь ffmpeg утилиту для pyannote.audio
+
 ### Что делается на этом этапе
 
 На данном этапе поднимается базовый аудио-пайплайн на ограниченном фрагменте валидационного фильма длительностью 5–10 минут.
@@ -343,9 +345,52 @@ python -m src.diarization \
   --device auto
 ```
 
-## Шаг 5
+## Этап 5. Сборка utterances из ASR и diarization
 
-Собрать utterances.
+### Что делается на этом этапе
+
+На данном этапе результаты автоматической транскрибации речи и speaker diarization объединяются в единую структуру реплик, далее называемую `utterances`.
+
+Если на этапе 4 были получены:
+
+- ASR-сегменты с текстом и временными метками;
+- diarization-сегменты с метками говорящих;
+
+то на этапе 5 эти два источника информации синхронизируются и преобразуются в последовательность реплик следующего вида:
+
+```json
+{
+  "utterance_id": "utt_0001",
+  "start_time": 12.52,
+  "end_time": 15.30,
+  "speaker_label": "SPEAKER_00",
+  "speaker_name": null,
+  "text": "Здравствуйте, товарищ подполковник.",
+  "words": [
+    {
+      "word": "Здравствуйте",
+      "start_time": 12.52,
+      "end_time": 13.10
+    }
+  ]
+}
+```
+
+
+---
+
+### Как запускать
+
+```bash
+python -m src.utterance_builder \
+  --asr-input data/interim/asr_validation_sample.json \
+  --diarization-input data/interim/diarization_validation_sample.json \
+  --utterances-output data/processed/utterances_validation_sample.jsonl \
+  --stats-output data/processed/utterances_validation_sample_stats.json \
+  --max-pause-sec 1.0 \
+  --unknown-speaker-label unknown_speaker \
+  --max-nonoverlap-assign-distance-sec 1.0
+```
 
 ## Шаг 6
 
