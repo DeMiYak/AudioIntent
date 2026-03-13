@@ -6,3 +6,6 @@ jupyter
 notebook
 tqdm
 openpyxl
+torch
+whisperx
+pyannote.audio
