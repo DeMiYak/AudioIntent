@@ -5,3 +5,4 @@ pyyaml
 jupyter
 notebook
 tqdm
+openpyxl
