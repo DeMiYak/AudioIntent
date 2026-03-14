@@ -392,10 +392,53 @@ python -m src.utterance_builder \
   --max-nonoverlap-assign-distance-sec 1.0
 ```
 
-## Шаг 6
+## Этап 6. Speaker identification
 
-Добавить speaker identification.
+### Что делается на этом этапе
 
+На данном этапе анонимные `speaker_label`, полученные после diarization, сопоставляются с именами персонажей из входных данных.
+
+Если после этапа 5 каждая реплика (`utterance`) уже содержит:
+- текст,
+- временной интервал,
+- `speaker_label`,
+
+то на этапе 6 в эту структуру добавляется:
+- `speaker_name`,
+- при необходимости — численная мера уверенности сопоставления.
+
+Таким образом, реплика из вида:
+
+```json
+{
+  "utterance_id": "utt_0001",
+  "start_time": 12.52,
+  "end_time": 15.30,
+  "speaker_label": "SPEAKER_00",
+  "speaker_name": null,
+  "text": "Здравствуйте, товарищ подполковник."
+}
+```
+
+
+---
+
+### Как запускать
+
+```bash
+python -m src.speaker_id \
+  --audio-input data/interim/validation_sample.wav \
+  --utterances-input data/processed/utterances_validation_sample.jsonl \
+  --samples-dir data/raw/samples \
+  --utterances-output data/processed/utterances_validation_sample_with_speakers.jsonl \
+  --mapping-output artifacts/speaker_mapping_validation_sample.json \
+  --stats-output artifacts/speaker_id_validation_sample_stats.json \
+  --similarity-threshold 0.65 \
+  --min-sample-duration-sec 0.5 \
+  --min-utterance-duration-sec 0.7 \
+  --min-total-duration-sec 1.5 \
+  --max-total-duration-sec 45.0
+```
 ## Шаг 7
 
 Собрать end-to-end baseline pipeline.
