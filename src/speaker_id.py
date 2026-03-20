@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -11,7 +13,10 @@ import soundfile as sf
 from resemblyzer import VoiceEncoder, preprocess_wav
 
 
-SUPPORTED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".m4a", ".ogg"}
+SUPPORTED_AUDIO_EXTENSIONS = {
+    ".wav", ".mp3", ".flac", ".m4a", ".ogg",
+    ".aac", ".ac3", ".dts", ".mp4", ".mkv", ".mov", ".avi",
+}
 
 
 def load_jsonl(path: str | Path) -> list[dict[str, Any]]:
@@ -45,22 +50,66 @@ def save_json(data: dict[str, Any] | list[dict[str, Any]], path: str | Path) -> 
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+def run_command(command: list[str]) -> None:
+    try:
+        subprocess.run(command, check=True)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            "Ошибка при выполнении внешней команды:\n" + " ".join(command)
+        ) from exc
+
+
 def is_audio_file(path: Path) -> bool:
     return path.is_file() and path.suffix.lower() in SUPPORTED_AUDIO_EXTENSIONS
+
+
+def _finalize_wav(wav: np.ndarray) -> np.ndarray:
+    if wav.ndim == 2:
+        wav = wav.mean(axis=1)
+    return wav.astype(np.float32)
 
 
 def read_audio(path: str | Path) -> tuple[np.ndarray, int]:
     """
     Читает аудиофайл и приводит его к float32 mono waveform.
+
+    Сначала пробует direct read через soundfile.
+    Если формат не поддерживается (например, ac3 / dts / mkv),
+    используется ffmpeg-decoding во временный WAV.
     """
     path = Path(path)
-    wav, sr = sf.read(path)
 
-    if wav.ndim == 2:
-        wav = wav.mean(axis=1)
+    try:
+        wav, sr = sf.read(path)
+        return _finalize_wav(wav), sr
+    except Exception:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
 
-    wav = wav.astype(np.float32)
-    return wav, sr
+        try:
+            command = [
+                "ffmpeg",
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                str(path),
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-c:a",
+                "pcm_s16le",
+                str(tmp_path),
+            ]
+            run_command(command)
+            wav, sr = sf.read(tmp_path)
+            return _finalize_wav(wav), sr
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -97,21 +146,24 @@ def infer_character_name_from_flat_file(path: Path) -> str:
 
 def discover_sample_groups(samples_dir: str | Path) -> dict[str, list[Path]]:
     """
-    Поддерживаются два формата расположения сэмплов:
+    Поддерживает несколько способов расположения audio_profiles:
 
     Вариант A:
-    data/raw/samples/
-      Анна/
+    data/raw/validation/audio_profiles/
+      Никита/
         1.wav
-        2.wav
-      Пряников/
-        1.wav
+        2.ac3
+      Афина/
+        sample1.wav
 
     Вариант B:
-    data/raw/samples/
-      Анна__1.wav
-      Анна__2.wav
-      Пряников__1.wav
+    data/raw/validation/audio_profiles/
+      Никита__1.wav
+      Никита__2.ac3
+      Афина__1.wav
+
+    Вариант C:
+    рекурсивная вложенность, где имя персонажа = имя ближайшей папки с файлами.
     """
     samples_dir = Path(samples_dir)
     if not samples_dir.exists():
@@ -119,23 +171,24 @@ def discover_sample_groups(samples_dir: str | Path) -> dict[str, list[Path]]:
 
     groups: dict[str, list[Path]] = defaultdict(list)
 
-    subdirs = [p for p in samples_dir.iterdir() if p.is_dir()]
-    has_audio_in_subdirs = any(any(is_audio_file(fp) for fp in subdir.iterdir()) for subdir in subdirs)
+    audio_files = sorted(fp for fp in samples_dir.rglob("*") if is_audio_file(fp))
+    if not audio_files:
+        return {}
 
-    if has_audio_in_subdirs:
-        for subdir in sorted(subdirs):
-            audio_files = sorted(fp for fp in subdir.iterdir() if is_audio_file(fp))
-            if audio_files:
-                groups[subdir.name.strip()].extend(audio_files)
-        return dict(groups)
+    for audio_file in audio_files:
+        relative_parts = audio_file.relative_to(samples_dir).parts
 
-    flat_audio_files = sorted(fp for fp in samples_dir.iterdir() if is_audio_file(fp))
-    for audio_file in flat_audio_files:
-        character_name = infer_character_name_from_flat_file(audio_file)
-        if character_name:
-            groups[character_name].append(audio_file)
+        if len(relative_parts) >= 2:
+            character_name = relative_parts[0].strip()
+        else:
+            character_name = infer_character_name_from_flat_file(audio_file)
 
-    return dict(groups)
+        if not character_name:
+            continue
+
+        groups[character_name].append(audio_file)
+
+    return {name: sorted(files) for name, files in sorted(groups.items())}
 
 
 def build_character_embeddings(
