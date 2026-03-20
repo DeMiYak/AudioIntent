@@ -601,7 +601,8 @@ def main() -> None:
     save_json(metrics, metrics_output)
     print_metrics(metrics)
 
-    print(f"\nСловарь сохранён в: {lexicon_output}")
+    print("\n=== OUTPUT PATHS ===")
+    print(f"Словарь сохранён в: {lexicon_output}")
     print(f"Предсказания сохранены в: {predictions_output}")
     print(f"Метрики сохранены в: {metrics_output}")
 
