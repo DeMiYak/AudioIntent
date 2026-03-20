@@ -91,7 +91,7 @@ closing = "Алина - пока"
 - **Resemblyzer** — голосовые эмбеддинги для speaker identification.
 - **scikit-learn / numpy** — служебные вычисления, метрики и обработка данных.
 - **ffmpeg** — извлечение и нормализация аудио из `mkv`, `ac3`, `dts` и других контейнеров.
-- **Jupyter Notebook** — проверка и запуск `evaluation.ipynb`.
+- **Jupyter Notebook/Kaggle/Colabs** — проверка и запуск `evaluation.ipynb`.
 
 ### Почему выбран именно такой стек
 
@@ -148,7 +148,7 @@ Diarization нужен не ради самих speaker labels, а чтобы п
 
 **Файлы этапа:**
 - `src/preprocess_gold.py`
-- `data/raw/gold/Данные_.xlsx`
+- `data/raw/gold/data_val.xlsx`
 - `data/processed/gold_dialogues.jsonl`
 - `data/processed/gold_stats.json`
 - `data/processed/gold_skipped_lines.json`
@@ -339,7 +339,7 @@ Pipeline:
 
 ```bash
 python -m src.preprocess_gold \
-  --input data/raw/gold/Данные_.xlsx \
+  --input data/raw/gold/data_val.xlsx \
   --output data/processed/gold_dialogues.jsonl \
   --stats-output data/processed/gold_stats.json \
   --skipped-output data/processed/gold_skipped_lines.json
@@ -361,7 +361,7 @@ python -m src.rule_based_intent \
 
 ```bash
 python -m src.export_validation_gold \
-  --input data/raw/gold/Данные_.xlsx \
+  --input data/raw/gold/data_val.xlsx \
   --output artifacts/validation_status_svoboden/gold.xlsx
 ```
 
@@ -369,7 +369,7 @@ python -m src.export_validation_gold \
 
 ```bash
 python -m src.pipeline \
-  --gold-excel data/raw/gold/Данные_.xlsx \
+  --gold-excel data/raw/gold/data_val.xlsx \
   --fit-input data/processed/gold_dialogues.jsonl \
   --validation-dir data/raw/validation \
   --media-input data/raw/validation/status_svoboden.mkv \
