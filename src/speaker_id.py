@@ -179,7 +179,7 @@ def discover_sample_groups(samples_dir: str | Path) -> dict[str, list[Path]]:
         relative_parts = audio_file.relative_to(samples_dir).parts
 
         if len(relative_parts) >= 2:
-            character_name = relative_parts[0].strip()
+            character_name = relative_parts[-2].strip()
         else:
             character_name = infer_character_name_from_flat_file(audio_file)
 
