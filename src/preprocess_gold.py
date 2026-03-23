@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import time
 from pathlib import Path
 from typing import Any
@@ -20,7 +20,7 @@ def resolve_input_path(path_arg: str | Path) -> Path:
 
     Поддерживаем:
     - явный путь от пользователя;
-    - ожидаемое имя `Данные_.xlsx`;
+    - ожидаемые имена `data_val.xlsx` или `Данные_.xlsx`;
     - zip-имя, в котором кириллица была превращена в #U0414...
     """
     path = Path(path_arg)
@@ -30,6 +30,7 @@ def resolve_input_path(path_arg: str | Path) -> Path:
     gold_dir = path.parent if path.parent != Path(".") else Path("data/raw/gold")
     if gold_dir.exists():
         fallback_candidates = [
+            gold_dir / "data_val.xlsx",
             gold_dir / "Данные_.xlsx",
             gold_dir / "gold_dialogues.xlsx",
         ]
@@ -347,7 +348,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input",
         type=str,
-        default="data/raw/gold/Данные_.xlsx",
+        default="data/raw/gold/data_val.xlsx",
         help="Путь к Excel-файлу с gold-разметкой.",
     )
     parser.add_argument(
