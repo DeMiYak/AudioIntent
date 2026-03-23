@@ -1,64 +1,71 @@
 # Data Format Specification
 
-## 1. SpeakerSegment
-Результат диаризации.
+Этот документ описывает реальные артефакты текущего pipeline для validation и test.
+Цель pipeline — извлечение пар вида:
 
-Поля:
-- `start_time: float`
-- `end_time: float`
-- `speaker_label: str`
+- `speaker - phrase`
 
-## 2. Utterance
-Реплика, собранная из ASR и diarization.
+отдельно для:
 
-Поля:
-- `utterance_id: str`
-- `start_time: float`
-- `end_time: float`
-- `speaker_label: str`
-- `speaker_name: str | null`
-- `text: str`
-- `words: list[dict]`
+- `opening`
+- `closing`
 
-Каждый элемент `words`:
-- `word: str`
-- `start_time: float`
-- `end_time: float`
+Итоговый Excel должен быть совместим с `notebooks/evaluation.ipynb`.
 
-## 3. IntentPrediction
-Результат модуля извлечения интенций.
+---
 
-Поля:
-- `utterance_id: str`
-- `expression: str`
-- `intent_type: str`
-- `char_start: int`
-- `char_end: int`
-- `token_start: int`
-- `token_end: int`
-- `confidence: float | null`
+## 1. Validation windows
 
-Допустимые значения `intent_type`:
-- `contact_open`
-- `contact_close`
+Источник validation-окон:
+- `data/raw/gold/data_val.xlsx`
+- лист: `Вал - Статус свободен`
 
-## 4. FinalPrediction
-Итоговый результат пайплайна.
+Каждое окно содержит:
 
-Поля:
-- `prediction_id: str`
-- `start_time: float`
-- `end_time: float`
-- `speaker_label: str`
-- `speaker_name: str`
-- `expression: str`
-- `intent_type: str`
-- `source_utterance: str`
-- `confidence: float | null`
+- `row_id` — ID строки из Excel, используется в итоговом Excel для evaluation
+- `window_id` — внутренний уникальный идентификатор окна для артефактов pipeline
+- `film`
+- `start_sec`
+- `end_sec`
+- `duration_sec`
+- `start_time`
+- `end_time`
+- `context`
+- `dialogue_type`
+- `annotation`
+- `gold_opening`
+- `gold_closing`
 
-## Правила
-1. В одной реплике может быть несколько выражений.
-2. Каждое выражение превращается в отдельный `FinalPrediction`.
-3. Если имя персонажа неизвестно, используется `speaker_name = "unknown"`.
-4. Временные метки выражения определяются по словам, входящим в span.
-5. Границы выражений в обучающих данных определяются по gold-разметке.
+### Важно
+- `row_id` не обязан быть уникальным.
+- `window_id` обязан быть уникальным.
+- `window_id` используется для имён папок и связи между этапами pipeline.
+
+---
+
+## 2. Gold Excel for evaluation
+
+Файл:
+- `gold.xlsx`
+
+Назначение:
+- gold-таблица для проверки через `evaluation.ipynb`
+
+Колонки:
+
+- `ID`
+- `Фильм`
+- `Время начала`
+- `Время окончания`
+- `opening`
+- `closing`
+
+Формат значений:
+- одна пара: `Спикер - фраза`
+- несколько пар: `Спикер - фраза; Спикер - фраза`
+
+Пример:
+
+```text
+opening = Никита - алло; Алина - привет
+closing = Алина - пока; Никита - давай
