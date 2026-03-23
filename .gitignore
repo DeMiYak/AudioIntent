@@ -9,6 +9,12 @@ venv/
 .env
 .ipynb_checkpoints/
 
+## Audio and video files
+*.ac3
+*.wav
+*.dts
+*.mkv
+
 data/interim/*
 data/processed/*
 models/*
