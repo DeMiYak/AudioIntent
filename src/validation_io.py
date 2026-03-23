@@ -19,15 +19,12 @@ def load_validation_windows(
     excel_path: str | Path,
     sheet_name: str = "Вал - Статус свободен",
 ) -> list[dict[str, Any]]:
-    """
-    Загружает validation-окна из Excel.
-    """
     resolved_path = resolve_input_path(excel_path)
     df = pd.read_excel(resolved_path, sheet_name=sheet_name)
 
     windows: list[dict[str, Any]] = []
 
-    for _, row in df.iterrows():
+    for row_number, (_, row) in enumerate(df.iterrows(), start=1):
         raw_id = row.get("ID")
         if pd.isna(raw_id):
             continue
@@ -41,11 +38,17 @@ def load_validation_windows(
         if end_sec < start_sec:
             end_sec += 24 * 3600
 
-        row_id_text = str(int(raw_id)) if isinstance(raw_id, float) and raw_id.is_integer() else str(raw_id).strip()
+        row_id_text = (
+            str(int(raw_id))
+            if isinstance(raw_id, float) and raw_id.is_integer()
+            else str(raw_id).strip()
+        )
+
         windows.append(
             {
-                "row_id": row_id_text,
-                "window_id": f"val_{row_id_text}",
+                "row_number": row_number,
+                "row_id": row_id_text,  # оставляем как есть для Excel/eval
+                "window_id": f"val_{row_number:03d}_{row_id_text}",  # уникальный internal id
                 "film": normalize_cell_text(row.get("Фильм")),
                 "start_sec": float(start_sec),
                 "end_sec": float(end_sec),
@@ -60,9 +63,7 @@ def load_validation_windows(
             }
         )
 
-    windows.sort(key=lambda x: (x["start_sec"], x["end_sec"], x["row_id"]))
     return windows
-
 
 def load_character_names(
     excel_path: str | Path,
