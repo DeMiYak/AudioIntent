@@ -27,7 +27,7 @@ def load_diarization_pipeline(
     """
     Загружает пайплайн diarization из pyannote.
     """
-    pipeline = Pipeline.from_pretrained(model_name, token=hf_token)
+    pipeline = Pipeline.from_pretrained(model_name, use_auth_token=hf_token)
 
     if device == "cuda":
         pipeline.to(torch.device("cuda"))
