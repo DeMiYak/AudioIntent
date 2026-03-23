@@ -13,7 +13,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input",
         type=str,
-        default="data/raw/gold/Данные_.xlsx",
+        default="data/raw/gold/data_val.xlsx",
         help="Путь к Excel-файлу с листом валидации.",
     )
     parser.add_argument(
