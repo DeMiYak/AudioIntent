@@ -6,27 +6,15 @@ import os
 from pathlib import Path
 from typing import Any
 
-from resemblyzer import VoiceEncoder
-
+from .asr import load_json as load_json_dict
 from .asr import prepare_audio, save_json as save_json_dict, transcribe_audio
-from .diarization import run_diarization
-from .pair_formatter import aggregate_window_predictions, build_extracted_pairs_dataframe, save_extracted_pairs
-from .rule_based_intent import compile_lexicon, extract_lexicon_from_gold, load_jsonl, predict_for_records, save_json as save_json_generic
-from .speaker_id import (
-    apply_assignments_to_utterances,
-    assign_speakers_to_characters,
-    build_character_embeddings,
-    build_speaker_embeddings,
-    discover_sample_groups,
-    save_json as save_json_speaker,
-    save_jsonl as save_jsonl_speaker,
-)
-from .utterance_builder import (
-    build_stats as build_utterance_stats,
-    build_utterances_from_units,
-    extract_timed_units_from_asr,
-    normalize_diarization_segments,
-    save_jsonl as save_jsonl_utterances,
+from .pair_formatter import build_extracted_pairs_dataframe, save_extracted_pairs, aggregate_window_predictions
+from .rule_based_intent import (
+    compile_lexicon,
+    extract_lexicon_from_gold,
+    load_jsonl,
+    predict_for_records,
+    save_json as save_json_generic,
 )
 from .validation_io import build_gold_dataframe_for_evaluation, load_validation_windows, save_dataframe_to_excel
 
@@ -102,11 +90,54 @@ def enrich_utterances_with_window_metadata(
         item["source_start_sec"] = window.get("start_sec")
         item["source_end_sec"] = window.get("end_sec")
         item["dialogue_id"] = window["window_id"]
+        item["utterance_id"] = f"{window['window_id']}_utt_{len(enriched)+1:03d}"
         enriched.append(item)
     return enriched
 
 
+def find_existing_stage_file(
+    *,
+    current_window_dir: Path,
+    filename: str,
+    input_dir: str | Path | None,
+    window_id: str,
+) -> Path | None:
+    default_candidate = current_window_dir / filename
+    if default_candidate.exists():
+        return default_candidate
+
+    if input_dir is None:
+        return None
+
+    base_dir = Path(input_dir)
+    candidates = [
+        base_dir / window_id / filename,
+        base_dir / filename,
+        base_dir / f"{window_id}_{filename}",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def stage_mode_flags(args: argparse.Namespace) -> dict[str, bool]:
+    if args.only_asr and args.only_diarization:
+        raise ValueError("Нельзя одновременно передать --only-asr и --only-diarization.")
+
+    do_asr = not args.skip_asr and not args.only_diarization
+    do_diarization = not args.skip_diarization and not args.only_asr
+    full_postprocess = not args.only_asr and not args.only_diarization
+    return {
+        "do_asr": do_asr,
+        "do_diarization": do_diarization,
+        "full_postprocess": full_postprocess,
+    }
+
+
 def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
+    modes = stage_mode_flags(args)
+
     output_dir = Path(args.output_dir)
     windows_dir = output_dir / "windows"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -126,26 +157,44 @@ def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             "или положите файл в data/raw/validation."
         )
 
-    samples_dir = Path(args.samples_dir) if args.samples_dir else auto_detect_samples_dir(args.validation_dir)
-    if samples_dir is None or not samples_dir.exists():
-        raise FileNotFoundError(
-            "Не найдена папка audio_profiles. Передайте --samples-dir "
-            "или положите её в data/raw/validation/audio_profiles."
+    gold_df = build_gold_dataframe_for_evaluation(windows)
+    gold_output_path = save_dataframe_to_excel(gold_df, args.gold_output)
+
+    lexicon: dict[str, list[dict[str, Any]]] | None = None
+    compiled_lexicon: dict[str, Any] | None = None
+    encoder = None
+    character_embeddings = None
+    character_profiles: list[dict[str, Any]] = []
+    samples_dir: Path | None = None
+
+    if modes["full_postprocess"]:
+        fit_records = load_jsonl(args.fit_input)
+        lexicon = extract_lexicon_from_gold(fit_records, min_freq=args.min_freq)
+        compiled_lexicon = compile_lexicon(lexicon)
+        save_json_generic(lexicon, output_dir / "rule_lexicon.json")
+
+        samples_dir = Path(args.samples_dir) if args.samples_dir else auto_detect_samples_dir(args.validation_dir)
+        if samples_dir is None or not samples_dir.exists():
+            raise FileNotFoundError(
+                "Не найдена папка audio_profiles. Передайте --samples-dir "
+                "или положите её в data/raw/validation/audio_profiles."
+            )
+
+        from resemblyzer import VoiceEncoder
+        from .speaker_id import (
+            build_character_embeddings,
+            discover_sample_groups,
+            save_json as save_json_speaker,
         )
 
-    fit_records = load_jsonl(args.fit_input)
-    lexicon = extract_lexicon_from_gold(fit_records, min_freq=args.min_freq)
-    compiled_lexicon = compile_lexicon(lexicon)
-    save_json_generic(lexicon, output_dir / "rule_lexicon.json")
-
-    sample_groups = discover_sample_groups(samples_dir)
-    encoder = VoiceEncoder()
-    character_embeddings, character_profiles = build_character_embeddings(
-        sample_groups=sample_groups,
-        encoder=encoder,
-        min_sample_duration_sec=args.min_sample_duration_sec,
-    )
-    save_json_speaker(character_profiles, output_dir / "character_profiles.json")
+        encoder = VoiceEncoder()
+        sample_groups = discover_sample_groups(samples_dir)
+        character_embeddings, character_profiles = build_character_embeddings(
+            sample_groups=sample_groups,
+            encoder=encoder,
+            min_sample_duration_sec=args.min_sample_duration_sec,
+        )
+        save_json_speaker(character_profiles, output_dir / "character_profiles.json")
 
     all_output_rows: list[dict[str, Any]] = []
     all_window_summaries: list[dict[str, Any]] = []
@@ -176,27 +225,124 @@ def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             channels=args.channels,
         )
 
-        transcript = transcribe_audio(
-            audio_path=prepared_audio_path,
-            model_name=args.asr_model_name,
-            device=args.device,
-            compute_type=args.compute_type,
-            batch_size=args.batch_size,
-            perform_alignment=not args.skip_alignment,
-        )
-        save_json_dict(transcript, transcript_path)
+        transcript: dict[str, Any] | None = None
+        diarization_result: dict[str, Any] | None = None
 
-        diarization_result = run_diarization(
-            audio_path=prepared_audio_path,
-            model_name=args.diarization_model_name,
-            hf_token=args.hf_token,
-            device=args.device,
-            use_exclusive=not args.disable_exclusive_diarization,
-            num_speakers=args.num_speakers,
-            min_speakers=args.min_speakers,
-            max_speakers=args.max_speakers,
+        transcript_source = None
+        if modes["do_asr"]:
+            transcript = transcribe_audio(
+                audio_path=prepared_audio_path,
+                model_name=args.asr_model_name,
+                device=args.device,
+                compute_type=args.compute_type,
+                batch_size=args.batch_size,
+                perform_alignment=not args.skip_alignment,
+            )
+            save_json_dict(transcript, transcript_path)
+            transcript_source = "generated"
+        else:
+            existing_transcript = find_existing_stage_file(
+                current_window_dir=window_dir,
+                filename="transcript.json",
+                input_dir=args.transcript_input_dir,
+                window_id=window["window_id"],
+            )
+            if existing_transcript is not None:
+                transcript = load_json_dict(existing_transcript)
+                transcript_source = str(existing_transcript)
+
+        if args.only_asr:
+            window_summary = {
+                "index": index,
+                "window_id": window["window_id"],
+                "row_id": window["row_id"],
+                "film": window.get("film"),
+                "start_sec": window["start_sec"],
+                "end_sec": window["end_sec"],
+                "effective_start_sec": effective_start,
+                "effective_end_sec": effective_end,
+                "duration_sec": window["duration_sec"],
+                "stage": "asr_only",
+                "transcript_source": transcript_source,
+                "transcript_output": str(transcript_path) if transcript_path.exists() else None,
+            }
+            dump_json(summary_path, window_summary)
+            all_window_summaries.append(window_summary)
+            continue
+
+        diarization_source = None
+        if modes["do_diarization"]:
+            from .diarization import run_diarization
+
+            diarization_result = run_diarization(
+                audio_path=prepared_audio_path,
+                model_name=args.diarization_model_name,
+                hf_token=args.hf_token,
+                device=args.device,
+                use_exclusive=not args.disable_exclusive_diarization,
+                num_speakers=args.num_speakers,
+                min_speakers=args.min_speakers,
+                max_speakers=args.max_speakers,
+            )
+            save_json_dict(diarization_result, diarization_path)
+            diarization_source = "generated"
+        else:
+            existing_diarization = find_existing_stage_file(
+                current_window_dir=window_dir,
+                filename="diarization.json",
+                input_dir=args.diarization_input_dir,
+                window_id=window["window_id"],
+            )
+            if existing_diarization is not None:
+                diarization_result = load_json_dict(existing_diarization)
+                diarization_source = str(existing_diarization)
+
+        if args.only_diarization:
+            window_summary = {
+                "index": index,
+                "window_id": window["window_id"],
+                "row_id": window["row_id"],
+                "film": window.get("film"),
+                "start_sec": window["start_sec"],
+                "end_sec": window["end_sec"],
+                "effective_start_sec": effective_start,
+                "effective_end_sec": effective_end,
+                "duration_sec": window["duration_sec"],
+                "stage": "diarization_only",
+                "diarization_source": diarization_source,
+                "diarization_output": str(diarization_path) if diarization_path.exists() else None,
+            }
+            dump_json(summary_path, window_summary)
+            all_window_summaries.append(window_summary)
+            continue
+
+        if transcript is None:
+            raise FileNotFoundError(
+                f"Для окна {window['window_id']} не найден transcript.json. "
+                "Либо не пропускайте ASR, либо передайте --transcript-input-dir."
+            )
+        if diarization_result is None:
+            raise FileNotFoundError(
+                f"Для окна {window['window_id']} не найден diarization.json. "
+                "Либо не пропускайте diarization, либо передайте --diarization-input-dir."
+            )
+        if encoder is None or compiled_lexicon is None or character_embeddings is None:
+            raise RuntimeError("Для полного постпроцессинга не инициализированы lexicon/encoder/character embeddings.")
+
+        from .speaker_id import (
+            apply_assignments_to_utterances,
+            assign_speakers_to_characters,
+            build_speaker_embeddings,
+            save_json as save_json_speaker,
+            save_jsonl as save_jsonl_speaker,
         )
-        save_json_dict(diarization_result, diarization_path)
+        from .utterance_builder import (
+            build_stats as build_utterance_stats,
+            build_utterances_from_units,
+            extract_timed_units_from_asr,
+            normalize_diarization_segments,
+            save_jsonl as save_jsonl_utterances,
+        )
 
         diarization_segments = normalize_diarization_segments(diarization_result)
         timed_units, used_word_level = extract_timed_units_from_asr(
@@ -209,6 +355,7 @@ def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         utterances = build_utterances_from_units(
             timed_units=timed_units,
             max_pause_sec=args.max_pause_within_utterance_sec,
+            max_total_duration_sec=args.max_total_utterance_duration_sec,
         )
         utterances = enrich_utterances_with_window_metadata(utterances, window)
         save_jsonl_utterances(utterances, utterances_path)
@@ -272,26 +419,30 @@ def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             "used_word_level_alignment": used_word_level,
             "predicted_opening": row.get("opening"),
             "predicted_closing": row.get("closing"),
+            "transcript_source": transcript_source,
+            "diarization_source": diarization_source,
             "utterance_stats": utterance_stats,
             "speaker_profiles": speaker_profiles,
         }
         dump_json(summary_path, window_summary)
         all_window_summaries.append(window_summary)
 
-    extracted_pairs_df = build_extracted_pairs_dataframe(all_output_rows)
-    extracted_pairs_path = save_extracted_pairs(extracted_pairs_df, args.extracted_pairs_output)
-
-    gold_df = build_gold_dataframe_for_evaluation(windows)
-    gold_output_path = save_dataframe_to_excel(gold_df, args.gold_output)
+    extracted_pairs_path = None
+    if modes["full_postprocess"]:
+        extracted_pairs_df = build_extracted_pairs_dataframe(all_output_rows)
+        extracted_pairs_path = save_extracted_pairs(extracted_pairs_df, args.extracted_pairs_output)
 
     overall_summary = {
         "num_windows": len(windows),
         "media_input": str(media_input),
-        "samples_dir": str(samples_dir),
-        "fit_input": str(Path(args.fit_input)),
+        "samples_dir": str(samples_dir) if samples_dir is not None else None,
+        "fit_input": str(Path(args.fit_input)) if modes["full_postprocess"] else None,
         "character_profiles_count": len(character_profiles),
         "output_dir": str(output_dir),
-        "extracted_pairs_output": str(extracted_pairs_path),
+        "stage_mode": (
+            "asr_only" if args.only_asr else "diarization_only" if args.only_diarization else "full_pipeline"
+        ),
+        "extracted_pairs_output": str(extracted_pairs_path) if extracted_pairs_path is not None else None,
         "gold_output": str(gold_output_path),
         "window_summaries": all_window_summaries,
     }
@@ -303,18 +454,33 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Validation pipeline под новый формат оценки (opening/closing speaker-phrase pairs)."
     )
-    parser.add_argument("--gold-excel", type=str, default="data/raw/gold/Данные_.xlsx")
+    parser.add_argument("--gold-excel", type=str, default="data/raw/gold/data_val.xlsx")
     parser.add_argument("--validation-sheet", type=str, default="Вал - Статус свободен")
     parser.add_argument("--fit-input", type=str, default="data/processed/gold_dialogues.jsonl")
     parser.add_argument("--validation-dir", type=str, default="data/raw/validation")
     parser.add_argument("--media-input", type=str, default=None)
     parser.add_argument("--samples-dir", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default="artifacts/validation_status_svoboden")
-    parser.add_argument("--extracted-pairs-output", type=str, default="artifacts/validation_status_svoboden/extracted_pairs.xlsx")
+    parser.add_argument(
+        "--extracted-pairs-output",
+        type=str,
+        default="artifacts/validation_status_svoboden/extracted_pairs.xlsx",
+    )
     parser.add_argument("--gold-output", type=str, default="artifacts/validation_status_svoboden/gold.xlsx")
 
+    parser.add_argument("--transcript-input-dir", type=str, default=None)
+    parser.add_argument("--diarization-input-dir", type=str, default=None)
+    parser.add_argument("--skip-asr", action="store_true")
+    parser.add_argument("--skip-diarization", action="store_true")
+    parser.add_argument("--only-asr", action="store_true")
+    parser.add_argument("--only-diarization", action="store_true")
+
     parser.add_argument("--asr-model-name", type=str, default="medium")
-    parser.add_argument("--diarization-model-name", type=str, default="pyannote/speaker-diarization-community-1")
+    parser.add_argument(
+        "--diarization-model-name",
+        type=str,
+        default="pyannote/speaker-diarization-community-1",
+    )
     parser.add_argument("--hf-token", type=str, default=None)
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
     parser.add_argument("--compute-type", type=str, default="auto", choices=["auto", "float16", "int8", "float32"])
@@ -353,7 +519,8 @@ def main() -> None:
     if args.hf_token is None:
         args.hf_token = os.getenv("HF_TOKEN")
 
-    if not args.hf_token:
+    needs_diarization_run = not args.skip_diarization and not args.only_asr
+    if needs_diarization_run and not args.hf_token:
         raise ValueError(
             "Для diarization нужен Hugging Face token. Передайте --hf-token "
             "или задайте переменную окружения HF_TOKEN."
@@ -362,7 +529,10 @@ def main() -> None:
     summary = run_validation_pipeline(args)
     print(f"Validation pipeline завершён. Окон с обработкой: {summary['num_windows']}")
     print(f"Gold сохранён в: {summary['gold_output']}")
-    print(f"Predictions сохранены в: {summary['extracted_pairs_output']}")
+    if summary.get("extracted_pairs_output"):
+        print(f"Predictions сохранены в: {summary['extracted_pairs_output']}")
+    else:
+        print(f"Режим запуска: {summary['stage_mode']}. Итоговый Excel с парами на этом шаге не формировался.")
 
 
 if __name__ == "__main__":
