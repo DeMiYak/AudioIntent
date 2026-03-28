@@ -89,9 +89,13 @@ def char_to_token_spans(text: str, tokens: list[str]) -> list[tuple[int, int]]:
     cursor = 0
 
     for token in tokens:
-        start = text.find(token, cursor)
-        if start == -1:
-            raise ValueError(f"Не удалось найти токен '{token}' в тексте: {text}")
+        # Use regex to find the token starting from the cursor
+        match = re.search(re.escape(token), text[cursor:])
+        if not match:
+            raise ValueError(
+                f"Не удалось найти токен '{token}' в тексте: {text} (cursor={cursor})"
+            )
+        start = cursor + match.start()
         end = start + len(token)
         spans.append((start, end))
         cursor = end
