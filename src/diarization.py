@@ -19,17 +19,21 @@ def resolve_device(device_arg: str) -> str:
     return device_arg
 
 
-def load_diarization_pipeline(
-    model_name: str,
-    hf_token: str,
-    device: str,
-) -> Pipeline:
-    """
-    Загружает пайплайн diarization из pyannote.
-    """
-    pipeline = Pipeline.from_pretrained(model_name, use_auth_token=hf_token)
+def load_diarization_pipeline(model_name: str, hf_token: str, device: str) -> Pipeline:
+    last_error = None
+    for kwargs in ({"token": hf_token}, {"use_auth_token": hf_token}):
+        try:
+            pipeline = Pipeline.from_pretrained(model_name, **kwargs)
+            break
+        except TypeError as e:
+            last_error = e
+            continue
+    else:
+        raise last_error or RuntimeError("Не удалось загрузить pyannote pipeline.")
 
     if device == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("Запрошен CUDA, но GPU недоступен.")
         pipeline.to(torch.device("cuda"))
 
     return pipeline
