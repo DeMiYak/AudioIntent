@@ -10,6 +10,173 @@ from typing import Any
 
 TOKEN_PATTERN = re.compile(r"\w+|[^\w\s]", re.UNICODE)
 
+# High-precision marker buckets.
+# Strong markers can survive as compact phrases; weak markers usually need context.
+OPEN_STRONG = {
+    "алло",
+    "алло!",
+    "здравствуй",
+    "здравствуйте",
+    "добрый день",
+    "добрый вечер",
+    "привет",
+    "извините",
+    "можно",
+    "можно?",
+}
+
+OPEN_WEAK = {
+    "а",
+    "да",
+    "ну",
+    "слушай",
+    "смотри",
+    "это",
+    "что",
+    "кто",
+}
+
+CLOSE_STRONG = {
+    "до свидания",
+    "пока",
+    "прощай",
+    "спасибо",
+    "чао",
+    "счастливо",
+}
+
+CLOSE_WEAK = {
+    "все",
+    "ладно",
+    "ну все",
+    "давай",
+    "сейчас",
+}
+
+OPEN_MANUAL_RULES = {
+    "where_have_i_seen_you",
+    "would_you_like_anything",
+    "can_i_join_you_for_a_drink",
+    "is_that_you_nikita",
+}
+
+CLOSE_MANUAL_RULES = {
+    "withdraw_from_competition",
+    "do_not_disturb",
+    "i_am_leaving",
+    "call_me_later",
+    "be_there_soon",
+    "wait_at_time",
+    "bye_chao",
+}
+
+# These often appear in lexicon because of noisy / too-narrow gold spans.
+# Treat them as highly ambiguous when they are used as standalone opening rules.
+AMBIGUOUS_OPEN_RULES = {
+    "а",
+    "да",
+    "ну",
+    "все",
+    "так",
+    "что",
+    "нас",
+    "таня",
+}
+
+AMBIGUOUS_CLOSE_RULES: set[str] = set()
+
+# Manual patterns for validation-style cases where the lexicon is usually too narrow.
+MANUAL_PATTERNS: list[dict[str, Any]] = [
+    {
+        "intent_type": "contact_open",
+        "name": "where_have_i_seen_you",
+        "pattern": re.compile(
+            r"(?<!\w)где\s+я\s+тебя\s+видел(?=[?.!,]|$)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_open",
+        "name": "would_you_like_anything",
+        "pattern": re.compile(
+            r"(?<!\w)желаете\s+что\s*[-—–]?\s*нибудь(?=[?.!,]|$)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_open",
+        "name": "can_i_join_you_for_a_drink",
+        "pattern": re.compile(
+            r"(?<!\w)можно\s+с\s+вами\s+выпить(?=[?.!,]|$)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_open",
+        "name": "is_that_you_nikita",
+        "pattern": re.compile(
+            r"(?<!\w)это\s+вы\s*[—-]?\s*никита(?=[?.!,]|$)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_close",
+        "name": "withdraw_from_competition",
+        "pattern": re.compile(
+            r"(?<!\w)мы\s+снимаемся\s+с\s+соревнований(?=[?.!,]|$)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_close",
+        "name": "do_not_disturb",
+        "pattern": re.compile(
+            r"(?<!\w)не\s+буду\s+вам\s+мешать(?=[?.!,]|$)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_close",
+        "name": "i_am_leaving",
+        "pattern": re.compile(
+            r"(?<!\w)я\s+пош[её]л(?=[?.!,]|$)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_close",
+        "name": "call_me_later",
+        "pattern": re.compile(
+            r"(?<!\w)надумаешь\s*[-—–?]\s*[зс]вони(?=[?.!,]|$)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_close",
+        "name": "be_there_soon",
+        "pattern": re.compile(
+            r"(?<!\w)буду\s+через\s+полчаса(?=[?.!,]|$)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_close",
+        "name": "wait_at_time",
+        "pattern": re.compile(
+            r"(?<!\w)жду\s+тебя\s+в\s+(?:\d+|десять|10)(?=[?.!,]|$)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_close",
+        "name": "bye_chao",
+        "pattern": re.compile(
+            r"(?<!\w)чао(?:\s*,\s*[а-яёa-z-]+)?(?=[?.!,]|$)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+]
+
 
 def load_jsonl(path: str | Path) -> list[dict[str, Any]]:
     """
@@ -28,6 +195,7 @@ def load_jsonl(path: str | Path) -> list[dict[str, Any]]:
     return records
 
 
+
 def save_jsonl(records: list[dict[str, Any]], path: str | Path) -> None:
     """
     Сохраняет список словарей в JSONL.
@@ -38,6 +206,7 @@ def save_jsonl(records: list[dict[str, Any]], path: str | Path) -> None:
     with path.open("w", encoding="utf-8") as f:
         for record in records:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
 
 
 def save_json(data: dict[str, Any] | list[dict[str, Any]], path: str | Path) -> None:
@@ -51,6 +220,7 @@ def save_json(data: dict[str, Any] | list[dict[str, Any]], path: str | Path) -> 
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+
 def normalize_for_matching(text: str) -> str:
     """
     Нормализация текста для сопоставления:
@@ -62,23 +232,15 @@ def normalize_for_matching(text: str) -> str:
     return text.lower().replace("ё", "е")
 
 
+
 def tokenize_text(text: str) -> list[str]:
     """
     Простая токенизация:
     - слова
     - знаки препинания отдельно
-
-    Args:
-        text (str): Входной текст для токенизации.
-
-    Returns:
-        list[str]: Список токенов, может быть пустым для пустого входа.
-
-    Edge cases:
-        - Возвращает пустой список для пустого входа.
-        - Корректно обрабатывает Unicode-символы.
     """
     return TOKEN_PATTERN.findall(text)
+
 
 
 def char_to_token_spans(text: str, tokens: list[str]) -> list[tuple[int, int]]:
@@ -89,7 +251,6 @@ def char_to_token_spans(text: str, tokens: list[str]) -> list[tuple[int, int]]:
     cursor = 0
 
     for token in tokens:
-        # Use regex to find the token starting from the cursor
         match = re.search(re.escape(token), text[cursor:])
         if not match:
             raise ValueError(
@@ -101,6 +262,7 @@ def char_to_token_spans(text: str, tokens: list[str]) -> list[tuple[int, int]]:
         cursor = end
 
     return spans
+
 
 
 def char_span_to_token_span(
@@ -127,21 +289,39 @@ def char_span_to_token_span(
     return covered_tokens[0], covered_tokens[-1]
 
 
+
 def build_expression_regex(expression_text: str) -> re.Pattern[str]:
     """
     Строит regex для поиска выражения в тексте.
 
     Особенности:
     - матчинг идёт по нормализованному тексту
-    - пробелы в выражении допускают вариативность через \\s+
+    - пробелы допускают вариативность через \\s+
+    - дефисы допускают вариативность через \\s*[-—–]?\\s*
     - по краям добавляются word-boundary-подобные ограничения, если это нужно
     """
     expr = normalize_for_matching(expression_text).strip()
     if not expr:
         raise ValueError("Пустое выражение нельзя превратить в regex.")
 
-    parts = [re.escape(part) for part in re.split(r"\s+", expr) if part]
-    body = r"\s+".join(parts)
+    parts: list[str] = []
+    idx = 0
+    while idx < len(expr):
+        ch = expr[idx]
+        if ch.isspace():
+            while idx < len(expr) and expr[idx].isspace():
+                idx += 1
+            parts.append(r"\s+")
+            continue
+        if ch in "-—–":
+            while idx < len(expr) and expr[idx] in "-—– ":
+                idx += 1
+            parts.append(r"\s*[-—–]?\s*")
+            continue
+        parts.append(re.escape(ch))
+        idx += 1
+
+    body = "".join(parts)
 
     non_space_chars = [ch for ch in expr if not ch.isspace()]
     first_char = non_space_chars[0] if non_space_chars else ""
@@ -156,24 +336,121 @@ def build_expression_regex(expression_text: str) -> re.Pattern[str]:
     return re.compile(body, re.UNICODE)
 
 
+
+def split_into_sentence_spans(text: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    start = 0
+
+    for match in re.finditer(r"[.!?]+", text):
+        end = match.end()
+        spans.append((start, end))
+        start = end
+        while start < len(text) and text[start].isspace():
+            start += 1
+
+    if start < len(text):
+        spans.append((start, len(text)))
+
+    return spans or [(0, len(text))]
+
+
+
+def _trim_span(text: str, start: int, end: int) -> tuple[int, int, str]:
+    while start < end and text[start] in " \t\n,;:-—–":
+        start += 1
+    while end > start and text[end - 1] in " \t\n,;:-—–.!?":
+        end -= 1
+    return start, end, text[start:end]
+
+
+
+def _split_clause_bounds(sentence_text: str, local_start: int, local_end: int) -> tuple[int, int]:
+    left = local_start
+    right = local_end
+
+    separators = set(",;:")
+
+    while left > 0:
+        prev = sentence_text[left - 1]
+        if prev in separators:
+            break
+        left -= 1
+
+    while right < len(sentence_text):
+        curr = sentence_text[right]
+        if curr in separators:
+            break
+        right += 1
+
+    return left, right
+
+
+
+def expand_match_to_phrase(
+    text: str,
+    char_start: int,
+    char_end: int,
+    rule_expression: str,
+) -> tuple[int, int, str]:
+    """
+    Расширяет матч до более осмысленной фразы.
+
+    Приоритет:
+    1. manual pattern span, если он пересекается с матчем
+    2. компактный span для strong-маркеров
+    3. клауза внутри предложения
+    4. всё предложение, если оно короткое
+    5. fallback на исходный матч
+    """
+    normalized_rule = normalize_for_matching(rule_expression)
+
+    for pattern_info in MANUAL_PATTERNS:
+        for match in pattern_info["pattern"].finditer(text):
+            m_start, m_end = match.span()
+            if not (m_end <= char_start or m_start >= char_end):
+                return _trim_span(text, m_start, m_end)
+
+    if normalized_rule in OPEN_STRONG or normalized_rule in CLOSE_STRONG:
+        return _trim_span(text, char_start, char_end)
+
+    sentence_spans = split_into_sentence_spans(text)
+    sent_start, sent_end = 0, len(text)
+    for s_start, s_end in sentence_spans:
+        if s_start <= char_start < s_end:
+            sent_start, sent_end = s_start, s_end
+            break
+
+    sentence_text = text[sent_start:sent_end]
+    local_start = max(0, char_start - sent_start)
+    local_end = max(local_start, min(len(sentence_text), char_end - sent_start))
+
+    clause_local_start, clause_local_end = _split_clause_bounds(
+        sentence_text, local_start, local_end
+    )
+    clause_start = sent_start + clause_local_start
+    clause_end = sent_start + clause_local_end
+    clause_start, clause_end, clause_text = _trim_span(text, clause_start, clause_end)
+
+    # Prefer clause when it is not too long and meaningfully larger than the marker.
+    clause_tokens = tokenize_text(clause_text)
+    match_tokens = tokenize_text(text[char_start:char_end])
+    if 2 <= len(clause_tokens) <= 12 and len(clause_tokens) > len(match_tokens):
+        return clause_start, clause_end, clause_text
+
+    sentence_start, sentence_end, sentence_clean = _trim_span(text, sent_start, sent_end)
+    if 2 <= len(tokenize_text(sentence_clean)) <= 10:
+        return sentence_start, sentence_end, sentence_clean
+
+    return _trim_span(text, char_start, char_end)
+
+
+
 def extract_lexicon_from_gold(
     gold_records: list[dict[str, Any]],
     min_freq: int = 1,
 ) -> dict[str, Any]:
     """
     Из gold-разметки строит словарь выражений для rule-based baseline.
-
-    Итоговая структура:
-    {
-      "contact_open": [
-         {"expression_text": "...", "frequency": 10},
-         ...
-      ],
-      "contact_close": [
-         {"expression_text": "...", "frequency": 4},
-         ...
-      ]
-    }
     """
     counter_by_intent: dict[str, Counter[str]] = {
         "contact_open": Counter(),
@@ -205,10 +482,13 @@ def extract_lexicon_from_gold(
             for expr, freq in counter.items()
             if freq >= min_freq
         ]
-        items.sort(key=lambda x: (-len(x["expression_text"]), -x["frequency"], x["expression_text"]))
+        items.sort(
+            key=lambda x: (-len(x["expression_text"]), -x["frequency"], x["expression_text"])
+        )
         lexicon[intent_type] = items
 
     return lexicon
+
 
 
 def compile_lexicon(lexicon: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
@@ -241,6 +521,7 @@ def compile_lexicon(lexicon: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     return compiled
 
 
+
 def collect_candidates_for_text(
     dialogue_id: str,
     utterance_id: str,
@@ -271,6 +552,7 @@ def collect_candidates_for_text(
                         "utterance_id": utterance_id,
                         "speaker_name": speaker_name,
                         "source_text": text,
+                        "matched_text": matched_text,
                         "expression": matched_text,
                         "intent_type": intent_type,
                         "char_start": char_start,
@@ -283,7 +565,33 @@ def collect_candidates_for_text(
                     }
                 )
 
+    for pattern_info in MANUAL_PATTERNS:
+        intent_type = pattern_info["intent_type"]
+        for match in pattern_info["pattern"].finditer(text):
+            char_start, char_end = match.span()
+            token_start, token_end = char_span_to_token_span(text, char_start, char_end)
+            matched_text = text[char_start:char_end]
+            candidates.append(
+                {
+                    "dialogue_id": dialogue_id,
+                    "utterance_id": utterance_id,
+                    "speaker_name": speaker_name,
+                    "source_text": text,
+                    "matched_text": matched_text,
+                    "expression": matched_text,
+                    "intent_type": intent_type,
+                    "char_start": char_start,
+                    "char_end": char_end,
+                    "token_start": token_start,
+                    "token_end": token_end,
+                    "confidence": 1.0,
+                    "rule_expression": pattern_info["name"],
+                    "rule_frequency": 999,
+                }
+            )
+
     return candidates
+
 
 
 def spans_overlap(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
@@ -293,14 +601,111 @@ def spans_overlap(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
     return not (a_end <= b_start or a_start >= b_end)
 
 
+
+def score_candidate(candidate: dict[str, Any]) -> float:
+    """
+    Скоринг кандидата с учётом:
+    - силы маркера / manual pattern
+    - длины фразы
+    - позиции внутри окна
+    - штрафов за шумные однословные opening-правила
+    """
+    rule_expression = normalize_for_matching(str(candidate.get("rule_expression", "")))
+    intent_type = str(candidate.get("intent_type", ""))
+    phrase = normalize_for_matching(str(candidate.get("expression", "")))
+    phrase_token_len = len([tok for tok in tokenize_text(phrase) if re.search(r"\w", tok)])
+
+    score = 0.0
+
+    if intent_type == "contact_open":
+        if rule_expression in OPEN_STRONG:
+            score += 3.0
+        if rule_expression in OPEN_WEAK:
+            score -= 2.0
+        if rule_expression in OPEN_MANUAL_RULES:
+            score += 2.5
+        if rule_expression in AMBIGUOUS_OPEN_RULES:
+            score -= 2.5
+    elif intent_type == "contact_close":
+        if rule_expression in CLOSE_STRONG:
+            score += 3.0
+        if rule_expression in CLOSE_WEAK:
+            score -= 1.0
+        if rule_expression in CLOSE_MANUAL_RULES:
+            score += 2.5
+        if rule_expression in AMBIGUOUS_CLOSE_RULES:
+            score -= 2.0
+
+    if phrase_token_len == 1 and rule_expression not in OPEN_STRONG and rule_expression not in CLOSE_STRONG:
+        score -= 1.5
+    elif phrase_token_len == 2:
+        score += 0.25
+    elif phrase_token_len >= 3:
+        score += 1.0
+
+    if intent_type == "contact_open":
+        if any(marker in phrase for marker in ["здрав", "добрый", "привет", "алло", "можно", "желаете"]):
+            score += 0.75
+        if "?" in str(candidate.get("source_text", ""))[int(candidate.get("char_start", 0)):int(candidate.get("char_end", 0)) + 1]:
+            score += 0.25
+    elif intent_type == "contact_close":
+        if any(marker in phrase for marker in ["чао", "спасибо", "жду", "буду", "не буду", "снимаемся", "звони", "до свидания", "пока"]):
+            score += 0.75
+
+    start_time = candidate.get("start_time")
+    source_start_sec = candidate.get("source_start_sec")
+    source_end_sec = candidate.get("source_end_sec")
+    if start_time is not None and source_start_sec is not None and source_end_sec is not None:
+        try:
+            duration = float(source_end_sec) - float(source_start_sec)
+            rel = (float(start_time) - float(source_start_sec)) / duration if duration > 0 else None
+        except (TypeError, ValueError):
+            rel = None
+        if rel is not None:
+            candidate["relative_position"] = round(rel, 4)
+            if intent_type == "contact_open":
+                if rel <= 0.30:
+                    score += 1.5
+                elif rel <= 0.55:
+                    score += 0.5
+                else:
+                    score -= 1.75
+            elif intent_type == "contact_close":
+                if rel >= 0.70:
+                    score += 1.5
+                elif rel >= 0.45:
+                    score += 0.5
+                else:
+                    score -= 0.5
+
+    candidate["score"] = round(score, 4)
+    return score
+
+
+def acceptance_threshold(candidate: dict[str, Any]) -> float:
+    rule_expression = normalize_for_matching(str(candidate.get("rule_expression", "")))
+    intent_type = str(candidate.get("intent_type", ""))
+    phrase = normalize_for_matching(str(candidate.get("expression", "")))
+    phrase_token_len = len([tok for tok in tokenize_text(phrase) if re.search(r"\w", tok)])
+
+    if intent_type == "contact_close" and rule_expression in CLOSE_MANUAL_RULES:
+        return 0.5
+    if intent_type == "contact_open" and rule_expression in OPEN_MANUAL_RULES:
+        return 1.0
+    if intent_type == "contact_close" and (rule_expression in CLOSE_STRONG or phrase_token_len >= 2):
+        return 0.75
+    if intent_type == "contact_open" and phrase_token_len >= 3:
+        return 1.0
+    return 1.25
+
+
+
 def resolve_overlaps(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
     Удаляет конфликтующие пересекающиеся совпадения.
 
-    Приоритет:
-    1. более длинный span
-    2. более частое выражение в gold
-    3. меньший char_start
+    Важный нюанс: opening и closing могут частично пересекаться в одной и той же
+    реплике. Поэтому жёстко конкурируют только кандидаты одного intent_type.
     """
     if not candidates:
         return []
@@ -308,10 +713,11 @@ def resolve_overlaps(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     sorted_candidates = sorted(
         candidates,
         key=lambda x: (
-            -(x["char_end"] - x["char_start"]),
-            -x["rule_frequency"],
-            x["char_start"],
-            x["intent_type"],
+            -float(x.get("score", 0.0)),
+            -(int(x["char_end"]) - int(x["char_start"])),
+            -int(x.get("rule_frequency", 0)),
+            int(x["char_start"]),
+            str(x["intent_type"]),
         ),
     )
 
@@ -319,20 +725,21 @@ def resolve_overlaps(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     for cand in sorted_candidates:
         has_overlap = any(
-            spans_overlap(
-                cand["char_start"],
-                cand["char_end"],
-                chosen["char_start"],
-                chosen["char_end"],
+            str(cand.get("intent_type")) == str(chosen.get("intent_type"))
+            and spans_overlap(
+                int(cand["char_start"]),
+                int(cand["char_end"]),
+                int(chosen["char_start"]),
+                int(chosen["char_end"]),
             )
             for chosen in selected
         )
-
         if not has_overlap:
             selected.append(cand)
 
-    selected.sort(key=lambda x: (x["char_start"], x["char_end"]))
+    selected.sort(key=lambda x: (int(x["char_start"]), int(x["char_end"]), str(x.get("intent_type", ""))))
     return selected
+
 
 
 def predict_for_record(
@@ -360,8 +767,6 @@ def predict_for_record(
         compiled_lexicon=compiled_lexicon,
     )
 
-    predictions = resolve_overlaps(candidates)
-
     passthrough_fields = [
         "speaker_label",
         "start_time",
@@ -372,12 +777,49 @@ def predict_for_record(
         "source_start_sec",
         "source_end_sec",
     ]
-    for pred in predictions:
+
+    expanded: list[dict[str, Any]] = []
+    for cand in candidates:
+        item = dict(cand)
         for field in passthrough_fields:
             if field in record:
-                pred[field] = record[field]
+                item[field] = record[field]
 
+        p_start, p_end, phrase_text = expand_match_to_phrase(
+            text=text,
+            char_start=int(item["char_start"]),
+            char_end=int(item["char_end"]),
+            rule_expression=str(item["rule_expression"]),
+        )
+        item["char_start"] = p_start
+        item["char_end"] = p_end
+        item["expression"] = phrase_text
+        item["token_start"], item["token_end"] = char_span_to_token_span(text, p_start, p_end)
+        score_candidate(item)
+        expanded.append(item)
+
+    # Collapse exact duplicate spans within the same intent, keeping the best-scored one.
+    best_by_span: dict[tuple[str, int, int], dict[str, Any]] = {}
+    for cand in expanded:
+        key = (str(cand["intent_type"]), int(cand["char_start"]), int(cand["char_end"]))
+        prev = best_by_span.get(key)
+        cand_key = (float(cand.get("score", 0.0)), len(str(cand.get("expression", ""))))
+        prev_key = (
+            (float(prev.get("score", 0.0)), len(str(prev.get("expression", ""))))
+            if prev is not None
+            else None
+        )
+        if prev is None or (prev_key is not None and cand_key > prev_key):
+            best_by_span[key] = cand
+
+    filtered = [
+        cand
+        for cand in best_by_span.values()
+        if float(cand.get("score", 0.0)) >= acceptance_threshold(cand)
+    ]
+    predictions = resolve_overlaps(filtered)
     return predictions
+
 
 
 def predict_for_records(
@@ -394,6 +836,7 @@ def predict_for_records(
         all_predictions.extend(preds)
 
     return all_predictions
+
 
 
 def build_gold_span_index(records: list[dict[str, Any]]) -> dict[str, set[tuple[int, int, str]]]:
@@ -419,6 +862,7 @@ def build_gold_span_index(records: list[dict[str, Any]]) -> dict[str, set[tuple[
     return gold_index
 
 
+
 def build_pred_span_index(predictions: list[dict[str, Any]]) -> dict[str, set[tuple[int, int, str]]]:
     """
     Строит индекс предсказанных span'ов по utterance_id.
@@ -438,6 +882,7 @@ def build_pred_span_index(predictions: list[dict[str, Any]]) -> dict[str, set[tu
     return pred_index
 
 
+
 def compute_prf(tp: int, fp: int, fn: int) -> dict[str, float]:
     """
     Считает precision / recall / f1.
@@ -451,6 +896,7 @@ def compute_prf(tp: int, fp: int, fn: int) -> dict[str, float]:
         "recall": round(recall, 4),
         "f1": round(f1, 4),
     }
+
 
 
 def evaluate_predictions(
@@ -509,6 +955,7 @@ def evaluate_predictions(
     return metrics
 
 
+
 def print_lexicon_stats(lexicon: dict[str, Any]) -> None:
     """
     Печатает краткую статистику по словарю baseline.
@@ -522,6 +969,7 @@ def print_lexicon_stats(lexicon: dict[str, Any]) -> None:
             print("  Топ-10:")
             for item in top_items:
                 print(f"    {item['expression_text']} ({item['frequency']})")
+
 
 
 def print_metrics(metrics: dict[str, Any]) -> None:
@@ -541,6 +989,7 @@ def print_metrics(metrics: dict[str, Any]) -> None:
             f"{label} -> TP={values['tp']} FP={values['fp']} FN={values['fn']} "
             f"P={values['precision']} R={values['recall']} F1={values['f1']}"
         )
+
 
 
 def parse_args() -> argparse.Namespace:
@@ -584,6 +1033,7 @@ def parse_args() -> argparse.Namespace:
         help="Минимальная частота выражения в gold для включения в словарь.",
     )
     return parser.parse_args()
+
 
 
 def main() -> None:
