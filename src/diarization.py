@@ -20,10 +20,23 @@ def resolve_device(device_arg: str) -> str:
 
 
 def load_diarization_pipeline(model_name: str, hf_token: str, device: str) -> Pipeline:
-    last_error = None
-    for kwargs in ({"token": hf_token}, {"use_auth_token": hf_token}):
+    last_error: Exception | None = None
+    load_auth_mode: str | None = None
+    load_auth_fallback_used = False
+
+    for kwargs, mode in (({"token": hf_token}, "token"), ({"use_auth_token": hf_token}, "use_auth_token")):
         try:
+            if mode == "token":
+                print(f"[INFO] Loading pyannote pipeline with token=... | model={model_name}")
+            else:
+                print(
+                    "[FALLBACK] Pipeline.from_pretrained(..., token=...) is not supported by the current stack. "
+                    "Switching to use_auth_token=..."
+                )
+                load_auth_fallback_used = True
+
             pipeline = Pipeline.from_pretrained(model_name, **kwargs)
+            load_auth_mode = mode
             break
         except TypeError as e:
             last_error = e
@@ -35,8 +48,42 @@ def load_diarization_pipeline(model_name: str, hf_token: str, device: str) -> Pi
         if not torch.cuda.is_available():
             raise RuntimeError("Запрошен CUDA, но GPU недоступен.")
         pipeline.to(torch.device("cuda"))
+        print("[INFO] Pipeline moved to CUDA.")
+
+    # техническая мета-информация, чтобы потом вернуть её в JSON
+    pipeline._audiointent_load_meta = {
+        "load_auth_mode": load_auth_mode,
+        "load_auth_fallback_used": load_auth_fallback_used,
+    }
 
     return pipeline
+
+
+def _annotation_to_segments(annotation: Any) -> tuple[list[dict[str, Any]], int]:
+    """
+    Преобразует pyannote Annotation в JSON-friendly список сегментов.
+    Возвращает (segments, num_speakers_detected).
+    """
+    segments: list[dict[str, Any]] = []
+    speakers: set[str] = set()
+
+    for idx, (turn, _, speaker_label) in enumerate(annotation.itertracks(yield_label=True), start=1):
+        start_time = round(float(turn.start), 3)
+        end_time = round(float(turn.end), 3)
+        speaker_label = str(speaker_label)
+
+        segments.append(
+            {
+                "segment_id": f"spkseg_{idx:04d}",
+                "start_time": start_time,
+                "end_time": end_time,
+                "speaker_label": speaker_label,
+            }
+        )
+        speakers.add(speaker_label)
+
+    segments.sort(key=lambda x: (x["start_time"], x["end_time"], x["speaker_label"]))
+    return segments, len(speakers)
 
 
 def run_diarization(
@@ -51,6 +98,13 @@ def run_diarization(
 ) -> dict[str, Any]:
     """
     Выполняет speaker diarization и возвращает результат в JSON-формате проекта.
+
+    Теперь сохраняются ОБА варианта сегментов:
+    - regular_segments
+    - exclusive_segments
+
+    Для обратной совместимости ключ `segments` остаётся и содержит тот вариант,
+    который выбран параметром `use_exclusive`.
     """
     audio_path = Path(audio_path)
     resolved_device = resolve_device(device)
@@ -72,40 +126,55 @@ def run_diarization(
 
     output = pipeline(str(audio_path), **inference_kwargs)
 
-    if use_exclusive and hasattr(output, "exclusive_speaker_diarization"):
-        annotation = output.exclusive_speaker_diarization
+    # 1) regular diarization — основной raw-output
+    regular_annotation = getattr(output, "speaker_diarization", output)
+    regular_segments, regular_num_speakers = _annotation_to_segments(regular_annotation)
+
+    # 2) exclusive diarization — вспомогательный output community-1 для удобной стыковки с ASR
+    if hasattr(output, "exclusive_speaker_diarization"):
+        exclusive_annotation = output.exclusive_speaker_diarization
+        exclusive_segments, exclusive_num_speakers = _annotation_to_segments(exclusive_annotation)
+        exclusive_fallback_used = False
+    else:
+        print(
+            "[FALLBACK] output.exclusive_speaker_diarization is unavailable. "
+            "Using regular speaker diarization instead."
+        )
+        exclusive_segments = list(regular_segments)
+        exclusive_num_speakers = regular_num_speakers
+        exclusive_fallback_used = True
+
+    # 3) segments — backward-compatible поле для текущего downstream
+    if use_exclusive:
+        selected_segments = exclusive_segments
+        selected_num_speakers = exclusive_num_speakers
+        selected_segments_mode = "exclusive"
         used_exclusive = True
     else:
-        annotation = getattr(output, "speaker_diarization", output)
+        selected_segments = regular_segments
+        selected_num_speakers = regular_num_speakers
+        selected_segments_mode = "regular"
         used_exclusive = False
 
-    segments: list[dict[str, Any]] = []
-    speakers: set[str] = set()
-
-    for idx, (turn, _, speaker_label) in enumerate(annotation.itertracks(yield_label=True), start=1):
-        start_time = round(float(turn.start), 3)
-        end_time = round(float(turn.end), 3)
-        speaker_label = str(speaker_label)
-
-        segments.append(
-            {
-                "segment_id": f"spkseg_{idx:04d}",
-                "start_time": start_time,
-                "end_time": end_time,
-                "speaker_label": speaker_label,
-            }
-        )
-        speakers.add(speaker_label)
-
-    segments.sort(key=lambda x: (x["start_time"], x["end_time"], x["speaker_label"]))
+    load_meta = getattr(pipeline, "_audiointent_load_meta", {})
 
     return {
         "audio_path": str(audio_path),
         "model_name": model_name,
         "device": resolved_device,
+        "load_auth_mode": load_meta.get("load_auth_mode"),
+        "load_auth_fallback_used": load_meta.get("load_auth_fallback_used", False),
         "used_exclusive_diarization": used_exclusive,
-        "num_speakers_detected": len(speakers),
-        "segments": segments,
+        "exclusive_fallback_used": exclusive_fallback_used,
+        "selected_segments_mode": selected_segments_mode,
+        "num_speakers_detected": selected_num_speakers,
+        "num_speakers_detected_regular": regular_num_speakers,
+        "num_speakers_detected_exclusive": exclusive_num_speakers,
+        # backward-compatible
+        "segments": selected_segments,
+        # debug / analysis
+        "regular_segments": regular_segments,
+        "exclusive_segments": exclusive_segments,
     }
 
 
@@ -155,7 +224,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--disable-exclusive",
         action="store_true",
-        help="Если указан флаг, exclusive diarization не используется.",
+        help="Если указан флаг, поле segments будет заполнено regular diarization, а не exclusive.",
     )
     parser.add_argument(
         "--num-speakers",
