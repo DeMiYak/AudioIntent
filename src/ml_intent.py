@@ -113,7 +113,6 @@ class IntentClassifier:
             C=1.0,
             max_iter=1000,
             class_weight="balanced",
-            multi_class="multinomial",
             solver="lbfgs",
         )
         self.classes_: list[str] = []
