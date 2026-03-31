@@ -11,7 +11,7 @@
 В проекте используются три группы входных данных.
 
 1. **Gold-разметка** в `data/raw/gold/data_val.xlsx`:
-   - лист **`Диалоги`** — источник анализа и обучения;
+   - лист **`Диалоги`** — источник примеров для обучения ML-модели;
    - лист **`Вал - Статус свободен`** — validation-окна с gold-парами;
    - лист **`Статус свободен - персонажи`** — список персонажей validation-фильма.
 
@@ -20,13 +20,13 @@
    - папка `audio_profiles` с голосовыми профилями персонажей.
 
 3. **Test-данные** для фильма **«Питер FM»**:
-   - видео и/или аудио фильма.
+   - видео и/или аудио фильма (только медиафайл, без gold-разметки).
 
-Поддерживаются реальные мультимедийные форматы, встречающиеся в задаче: `mkv`, `ac3`, `dts`, а также более стандартные `wav`, `mp3`, `flac`, `m4a`, `aac`, `mp4`.
+Поддерживаются форматы: `mkv`, `ac3`, `dts`, `wav`, `mp3`, `flac`, `m4a`, `aac`, `mp4`.
 
 ### Что является целевым выходом
 
-Целевой результат для оценки — **не таймкоды**, а две колонки:
+Целевой результат для оценки — две колонки:
 
 - `opening`
 - `closing`
@@ -51,17 +51,7 @@ closing = "Алина - пока"
 - временные границы фрагмента;
 - gold-значения в колонках `opening` и `closing`.
 
-Следовательно, весь pipeline должен приводить сырые аудио- и видео-данные к файлу `extracted_pairs.xlsx`, совместимому с ноутбуком оценки.
-
-### Рабочая цель проекта
-
-Построить воспроизводимый pipeline, который:
-
-1. читает gold-разметку с листа `Диалоги`;
-2. строит baseline для поиска контактоустанавливающих и контактозавершающих выражений;
-3. прогоняет validation-фильм **«Статус: свободен»** по окнам из Excel;
-4. формирует `extracted_pairs.xlsx` в формате оценки;
-5. после стабилизации baseline служит основой для ML-версии.
+Весь pipeline должен приводить сырые аудио- и видео-данные к файлу `extracted_pairs.xlsx`, совместимому с ноутбуком оценки.
 
 ---
 
@@ -71,285 +61,74 @@ closing = "Алина - пока"
 
 Решение построено как поэтапный pipeline:
 
-1. из gold-разметки извлекаются примеры `opening` и `closing`;
-2. на их основе строится rule-based baseline;
+1. из gold-разметки (лист `Диалоги`) подготавливаются обучающие примеры;
+2. на их основе строится rule-based baseline **и** обучается ML-классификатор;
 3. для каждого validation-окна вырезается соответствующий фрагмент аудио;
 4. выполняются ASR и diarization;
 5. из этих результатов собираются реплики (`utterances`);
 6. diarization-speakers сопоставляются с персонажами через голосовые профили;
-7. по тексту реплик извлекаются `opening` / `closing`;
+7. по тексту реплик извлекаются `opening` / `closing` (rule-based, ML, или оба);
 8. найденные пары агрегируются в Excel-формат `Спикер - фраза`.
-
-Такой пайплайн хорошо соответствует новой постановке: нижние уровни работают с аудио и временными интервалами, а верхний уровень переводит результат в формат, который реально проверяется метриками.
 
 ### Стек
 
 - **Python** — основной язык проекта.
 - **pandas / openpyxl** — чтение Excel, подготовка таблиц, экспорт в `xlsx`.
-- **faster-whisper** — ASR для тяжёлого аудиоэтапа и отдельного Colab-прогона.
-- **pyannote.audio** — speaker diarization.
+- **faster-whisper** — ASR (запускается на Colab, артефакты используются локально).
+- **pyannote.audio** — speaker diarization (запускается на Colab).
 - **Resemblyzer** — голосовые эмбеддинги для speaker identification.
-- **scikit-learn / numpy** — служебные вычисления, метрики и обработка данных.
-- **ffmpeg** — извлечение и нормализация аудио из `mkv`, `ac3`, `dts` и других контейнеров.
-- **Jupyter Notebook** — проверка и запуск `evaluation.ipynb`.
-
-### Почему выбран именно такой стек
-
-#### 1. faster-whisper для ASR
-
-Для новой постановки не требуется обязательный слой forced alignment. Поэтому ASR считается отдельно через `faster-whisper`, а дальше используется повторно в раздельном pipeline: сначала можно получить `transcript.json` на Colab, затем независимо выполнить diarization и полный post-processing.
-
-#### 2. pyannote.audio для diarization
-
-Diarization нужен не ради самих speaker labels, а чтобы понять, кто именно произнёс реплику. pyannote.audio остаётся одним из самых практичных вариантов для такого шага в исследовательском pipeline.
-
-#### 3. Resemblyzer для speaker identification
-
-В задаче есть `audio_profiles` персонажей validation-фильма. Это делает подход с голосовыми эмбеддингами естественным: сначала diarization выделяет анонимных спикеров, затем они сопоставляются с персонажами по похожести эмбеддингов.
-
-#### 4. Rule-based baseline как первая рабочая версия
-
-Новая постановка требует сначала получить **рабочий validation pipeline**, а уже потом идти в ML. Поэтому baseline строится на правилах из листа `Диалоги`:
-- он прозрачен;
-- его легко отлаживать;
-- он позволяет быстро увидеть, где ошибка приходит из ASR, speaker attribution или самих правил.
-
-#### 5. Excel-first формат на верхнем уровне
-
-Проект специально перестроен так, чтобы верхний контракт соответствовал оценке. Внутри pipeline можно хранить JSON-артефакты, сегменты и служебные поля, но наружу обязательно должен выходить `extracted_pairs.xlsx` с колонками `opening` и `closing`.
+- **scikit-learn** — TF-IDF + LogisticRegression для ML-классификатора; метрики.
+- **joblib** — сериализация ML-модели.
+- **ffmpeg** — извлечение и нормализация аудио.
+- **Jupyter Notebook** — прогон validation pipeline и оценка метрик.
 
 ---
 
 ## Шаги реализации
 
-Ниже описан текущий маршрут проекта: от gold-разметки до validation pipeline. На каждом шаге указаны файлы этапа и смысл этого шага.
-
 ### Шаг 1. Зафиксировать формат задачи и структуру проекта
+
+**Статус:** выполнен.
 
 **Файлы этапа:**
 - `README.md`
 - `requirements.txt`
-- `configs/model.yaml`
-- `configs/paths.yaml`
-- `reports/data_format.md`
+- `configs/model.yaml`, `configs/paths.yaml`
 
-**Что делается:**
+Зафиксирована структура репозитория и целевой формат `opening` / `closing`.
 
-На первом шаге фиксируется, что проект решает уже не абстрактную задачу поиска span’ов в JSON, а задачу формирования двух колонок `opening` / `closing` для оценки в `evaluation.ipynb`.
-
-Также на этом шаге определяется структура репозитория:
-- `src/` — код пайплайна;
-- `data/raw/` — исходные Excel, видео, аудио и voice samples;
-- `data/interim/` — промежуточные артефакты ASR и diarization;
-- `data/processed/` — подготовленные JSONL и словари;
-- `artifacts/` — итоговые файлы запусков, включая `extracted_pairs.xlsx`.
+---
 
 ### Шаг 2. Подготовить gold-разметку из листа `Диалоги`
+
+**Статус:** выполнен.
 
 **Файлы этапа:**
 - `src/preprocess_gold.py`
 - `data/raw/gold/data_val.xlsx`
-- `data/processed/gold_dialogues.jsonl`
+- `data/processed/gold_dialogues.jsonl` — 1170 реплик из 18 фильмов
 - `data/processed/gold_stats.json`
-- `data/processed/gold_skipped_lines.json`
-
-**Что делается:**
-
-На этом шаге лист **`Диалоги`** из `data_val.xlsx` преобразуется в единый машинно-обрабатываемый формат.
-
-Из строки диалога извлекаются:
-- отдельные реплики;
-- имя говорящего;
-- текст реплики без XML-подобной разметки;
-- аннотации `<opening>...</opening>` и `<closing>...</closing>`.
-
-**Зачем это нужно:**
-
-Этот шаг создаёт базовый корпус для анализа типовых выражений и обучения будущих моделей. Без него нельзя ни построить baseline, ни провести осмысленный error analysis.
-
-### Шаг 3. Построить rule-based baseline по gold-разметке
-
-**Файлы этапа:**
-- `src/rule_based_intent.py`
-- `data/processed/gold_dialogues.jsonl`
-- `data/processed/rule_lexicon.json`
-- `artifacts/rule_based_predictions.jsonl`
-- `artifacts/rule_based_metrics.json`
-
-**Что делается:**
-
-Из подготовленного gold автоматически собирается словарь выражений установления и прекращения контакта. Затем этот словарь применяется к репликам и возвращает найденные выражения с типом:
-- `contact_open`
-- `contact_close`
-
-**Зачем это нужно:**
-
-Это первый интерпретируемый baseline. Он нужен не как финальное решение, а как рабочая контрольная точка:
-- быстро запускается;
-- хорошо объясняется;
-- помогает проверить, насколько задача вообще покрывается шаблонными выражениями.
-
-### Шаг 4. Подготовить слой работы с validation Excel
-
-**Файлы этапа:**
-- `src/validation_io.py`
-- `src/export_validation_gold.py`
-- `artifacts/validation_gold_test.xlsx`
-
-**Что делается:**
-
-На этом шаге проект учится работать не только с gold-диалогами, но и с validation-разметкой:
-- читать лист **`Вал - Статус свободен`**;
-- извлекать временные окна;
-- читать gold-значения `opening` и `closing`;
-- выгружать `gold.xlsx` в формате, пригодном для сравнения с `evaluation.ipynb`.
-
-**Зачем это нужно:**
-
-После смены постановки именно validation-лист становится основным ориентиром. Pipeline должен уметь воспроизводить его структуру и собирать предсказания в строго совместимом формате.
-
-### Шаг 5. Поднять ASR для окон validation-фильма
-
-**Файлы этапа:**
-- `src/asr.py`
-- промежуточные артефакты вида `artifacts/.../windows/<window_id>/audio.wav`
-- промежуточные артефакты вида `artifacts/.../windows/<window_id>/transcript.json`
-
-**Что делается:**
-
-Из исходного фильма или звуковой дорожки вырезается фрагмент по временному окну из validation-листа. Затем фрагмент приводится к стабильному формату WAV mono 16 kHz и передаётся в ASR.
-
-**Зачем это нужно:**
-
-Даже при финальной оценке по строкам `speaker - phrase` проект всё равно должен сначала получить текст из аудио. Этот этап даёт транскрипцию с временными метками и позволяет дальше синхронизировать текст с diarization.
-
-### Шаг 6. Выполнить diarization на тех же окнах
-
-**Файлы этапа:**
-- `src/diarization.py`
-- промежуточные артефакты вида `artifacts/.../windows/<window_id>/diarization.json`
-
-**Что делается:**
-
-Для того же фрагмента аудио определяется, какие интервалы принадлежат каким говорящим. На выходе получаются анонимные speaker labels, например `SPEAKER_00`, `SPEAKER_01`.
-
-**Зачем это нужно:**
-
-Новая постановка требует не просто найти фразу, а вернуть пару `Спикер - фраза`. Значит, выделение говорящих является обязательным элементом pipeline.
-
-### Шаг 7. Собрать реплики из ASR и diarization
-
-**Файлы этапа:**
-- `src/utterance_builder.py`
-- промежуточные артефакты вида `artifacts/.../windows/<window_id>/utterances.jsonl`
-
-**Что делается:**
-
-На этом шаге ASR-сегменты и diarization-сегменты объединяются в единую структуру реплик. Для каждой реплики формируются:
-- начало и конец;
-- текст;
-- `speaker_label`;
-- служебные поля окна validation.
-
-**Зачем это нужно:**
-
-Именно реплика — удобная единица для извлечения `opening` / `closing`. До этого шага у нас есть либо просто куски текста, либо просто интервалы говорящих. После него появляется объект, пригодный и для rule-based baseline, и для будущей ML-модели.
-
-### Шаг 8. Сопоставить speaker labels с персонажами
-
-**Файлы этапа:**
-- `src/speaker_id.py`
-- `data/raw/validation/audio_profiles/` или аналогичная папка с voice samples
-- промежуточные артефакты вида `artifacts/.../windows/<window_id>/speaker_assignments.json`
-- промежуточные артефакты вида `artifacts/.../windows/<window_id>/utterances_named.jsonl`
-
-**Что делается:**
-
-Для персонажей из `audio_profiles` вычисляются голосовые эмбеддинги. Затем по тем же эмбеддингам строятся представления diarization-speakers, и между ними ищется наилучшее соответствие.
-
-В коде предусмотрена поддержка `ac3`, `dts`, `mkv` и других реальных форматов: если файл не читается напрямую, он декодируется через `ffmpeg` во временный WAV.
-
-**Зачем это нужно:**
-
-Без этого шага у нас есть только анонимные speaker labels. Оценка же ожидает имена персонажей, поэтому speaker identification — это обязательный мост между diarization и итоговым `Спикер - фраза`.
-
-### Шаг 9. Сформировать пары `opening` / `closing` и собрать validation pipeline
-
-На этом шаге проект поддерживает два режима запуска:
-- **раздельный**: сначала `--only-asr`, затем `--only-diarization`, затем полный прогон с `--skip-asr --skip-diarization`;
-- **сквозной**: полный pipeline за один запуск, если окружение позволяет.
-
-**Файлы этапа:**
-- `src/pair_formatter.py`
-- `src/pipeline.py`
-- `artifacts/validation_status_svoboden/gold.xlsx`
-- `artifacts/validation_status_svoboden/extracted_pairs.xlsx`
-- `artifacts/validation_status_svoboden/run_summary.json`
-
-**Что делается:**
-
-Это центральный интеграционный шаг.
-
-Pipeline:
-1. берёт временные окна из листа **`Вал - Статус свободен`**;
-2. вырезает аудиофрагменты;
-3. запускает ASR;
-4. запускает diarization;
-5. собирает utterances;
-6. сопоставляет спикеров с персонажами;
-7. прогоняет извлечение `opening` / `closing`;
-8. агрегирует найденные выражения в колонки `opening` и `closing`;
-9. сохраняет итоговый `extracted_pairs.xlsx`.
-
-**Зачем это нужно:**
-
-Именно этот шаг превращает набор отдельных модулей в систему, которую можно напрямую проверять на validation и сравнивать с gold.
-
-### Шаг 10. Подготовить переход к ML-версии
-
-**Файлы этапа:**
-- `src/ml_intent.py`
-- `src/train_intent_model.py`
-- `src/predict_intent_model.py`
-- `src/evaluate.py`
-
-**Что делается:**
-
-После того как validation baseline стабилен, можно переходить к ML-слою для intent extraction. На этом этапе rule-based baseline используется как контрольная точка, а ML-модуль должен улучшать качество на тех случаях, где простые шаблоны уже не справляются.
-
-**Зачем это нужно:**
-
-Без рабочего baseline переход к ML слишком рано скрывает ошибки нижних уровней. Поэтому ML-этап осмыслен только после того, как уже собран и воспроизводим pipeline для `Статус: свободен`.
-
----
-
-## Текущий статус проекта
-
-Сейчас проект перестроен под новую постановку задачи:
-- gold читается из листа `Диалоги`;
-- validation читается из листа `Вал - Статус свободен`;
-- верхний контракт ориентирован на `opening` / `closing`;
-- добавлен экспорт совместимого `gold.xlsx`;
-- добавлен форматтер итоговых пар;
-- собран validation pipeline под фильм **«Статус: свободен»**.
-
-Следующий практический шаг — прогон полного validation pipeline на реальных медиафайлах и получение `extracted_pairs.xlsx` для сравнения через `evaluation.ipynb`.
-
----
-
-## Быстрый запуск
-
-### 1. Подготовка gold-разметки
 
 ```bash
 python -m src.preprocess_gold \
   --input data/raw/gold/data_val.xlsx \
   --output data/processed/gold_dialogues.jsonl \
-  --stats-output data/processed/gold_stats.json \
-  --skipped-output data/processed/gold_skipped_lines.json
+  --stats-output data/processed/gold_stats.json
 ```
 
-### 2. Rule-based baseline
+Распределение меток: 582 none / 413 contact_open / 178 contact_close.
+
+---
+
+### Шаг 3. Построить rule-based baseline по gold-разметке
+
+**Статус:** выполнен, стабилизирован.
+
+**Файлы этапа:**
+- `src/rule_based_intent.py` — TF-IDF лексикон (229 open / 119 close) + MANUAL_PATTERNS
+
+Ключевые механизмы: `collect_candidates_for_text`, `score_candidate`, `expand_match_to_phrase`, `acceptance_threshold`.
+MANUAL_PATTERNS покрывают типовые русские приветствия и прощания (здравствуй(те), алло, ну пока, до свидания, до встречи, увидимся и др.).
 
 ```bash
 python -m src.rule_based_intent \
@@ -357,11 +136,18 @@ python -m src.rule_based_intent \
   --predict-input data/processed/gold_dialogues.jsonl \
   --lexicon-output data/processed/rule_lexicon.json \
   --predictions-output artifacts/rule_based_predictions.jsonl \
-  --metrics-output artifacts/rule_based_metrics.json \
-  --min-freq 1
+  --metrics-output artifacts/rule_based_metrics.json
 ```
 
-### 3. Экспорт validation gold
+---
+
+### Шаг 4. Подготовить слой работы с validation Excel
+
+**Статус:** выполнен.
+
+**Файлы этапа:**
+- `src/validation_io.py`
+- `src/export_validation_gold.py`
 
 ```bash
 python -m src.export_validation_gold \
@@ -369,8 +155,54 @@ python -m src.export_validation_gold \
   --output artifacts/validation_status_svoboden/gold.xlsx
 ```
 
-### 4. Полный validation pipeline
+---
 
+### Шаг 5–6. ASR и diarization
+
+**Статус:** выполнены на Colab; артефакты хранятся локально.
+
+**Артефакты:**
+- `artifacts/validation_status_svoboden_asr_diarization_colab/windows/val_NNN_YYYYY/`
+  - `audio.wav`, `transcript.json`, `diarization.json`
+
+Для повторного запуска:
+```bash
+python -m src.pipeline --only-asr   # только ASR
+python -m src.pipeline --only-diarization  # только diarization
+```
+
+---
+
+### Шаг 7–8. Сборка реплик и speaker identification
+
+**Статус:** реализованы в `src/utterance_builder.py` и `src/speaker_id.py`.
+
+- `--diarization-segment-mode regular` — использовать `regular_segments` из diarization.json (исправляет коллапс спикеров в 6 validation-окнах).
+- Resemblyzer, порог сходства 0.65, мин. длительность аудио на спикера 1.5 с.
+- Голосовые профили персонажей: `data/raw/validation/audio_profiles/`.
+
+---
+
+### Шаг 9. Формирование пар `opening` / `closing` — validation pipeline
+
+**Статус:** выполнен и воспроизводим.
+
+**Файлы этапа:**
+- `src/pair_formatter.py`
+- `src/pipeline.py`
+- `notebooks/validation_postprocess_and_evaluation_local.ipynb`
+- `artifacts/eval_comparison.json` — сравнение метрик по всем версиям
+
+**Текущие метрики (validation_status_svoboden_local_postprocess_v4):**
+| Набор    | P     | R     | F1    | matched |
+|----------|-------|-------|-------|---------|
+| all      | 0.321 | 0.188 | 0.237 | 18      |
+| opening  | 0.318 | 0.175 | 0.226 | 14      |
+| closing  | 0.333 | 0.250 | 0.286 | 4       |
+
+Метрики ограничены качеством speaker attribution (Resemblyzer); дальнейший тюнинг правил нецелесообразен — переходим к ML.
+
+**Полный validation pipeline:**
 ```bash
 python -m src.pipeline \
   --gold-excel data/raw/gold/data_val.xlsx \
@@ -378,9 +210,77 @@ python -m src.pipeline \
   --validation-dir data/raw/validation \
   --media-input data/raw/validation/status_svoboden.mkv \
   --samples-dir data/raw/validation/audio_profiles \
-  --output-dir artifacts/validation_status_svoboden \
+  --output-dir artifacts/validation_status_svoboden_local_postprocess_vN \
+  --diarization-segment-mode regular \
+  --skip-asr --skip-diarization \
+  --transcript-input-dir artifacts/validation_status_svoboden_asr_diarization_colab/windows \
+  --diarization-input-dir artifacts/validation_status_svoboden_asr_diarization_colab/windows \
   --hf-token YOUR_HF_TOKEN
 ```
+
+---
+
+### Шаг 10. ML-классификатор намерений
+
+**Статус:** реализован, готов к обучению и интеграции в pipeline.
+
+**Файлы этапа:**
+- `src/ml_intent.py` — TF-IDF (char n-gram 2-5) + LogisticRegression(class_weight='balanced')
+- `src/train_intent_model.py` — CLI для обучения модели
+- `src/predict_intent_model.py` — CLI для инференса на JSONL-репликах
+- `src/evaluate.py` — оценка предсказаний против gold на уровне реплик
+
+**Обучение:**
+```bash
+python -m src.train_intent_model \
+  --fit-input data/processed/gold_dialogues.jsonl \
+  --model-output data/models/intent_classifier.joblib \
+  --stats-output data/models/train_stats.json
+```
+
+**Инференс на репликах:**
+```bash
+python -m src.predict_intent_model \
+  --model data/models/intent_classifier.joblib \
+  --input utterances.jsonl \
+  --output predictions.jsonl
+```
+
+**Оценка предсказаний против gold:**
+```bash
+python -m src.evaluate \
+  --gold data/processed/gold_dialogues.jsonl \
+  --predictions artifacts/ml_predictions.jsonl \
+  --output artifacts/eval_ml_metrics.json
+```
+
+**Интеграция в pipeline** через `--intent-mode`:
+```bash
+python -m src.pipeline \
+  ... \
+  --intent-mode ml \
+  --ml-model data/models/intent_classifier.joblib
+
+# или combined (rule-based + ML, rule-based имеет приоритет):
+python -m src.pipeline \
+  ... \
+  --intent-mode combined \
+  --ml-model data/models/intent_classifier.joblib
+```
+
+---
+
+### Шаг 11. Тестовый фильм «Питер FM»
+
+**Статус:** планируется после стабилизации ML-модели.
+
+**Входные данные:** только видео/аудио `data/raw/test/piter_fm.*` (без gold).
+
+**Шаги:**
+1. Запустить ASR + diarization на Colab (так же, как для validation-фильма).
+2. Подготовить голосовые профили персонажей (выделить образцы голоса из аудио).
+3. Запустить `pipeline.py` с `--intent-mode ml` или `--intent-mode combined`.
+4. Сохранить `extracted_pairs.xlsx` как итоговый результат.
 
 ---
 
@@ -389,16 +289,38 @@ python -m src.pipeline \
 ```text
 .
 ├── artifacts/
+│   ├── eval_comparison.json              # сравнение метрик по всем версиям
+│   └── validation_status_svoboden_local_postprocess_vN/
+│       ├── extracted_pairs.xlsx
+│       ├── gold.xlsx
+│       ├── eval_metrics.json
+│       └── windows/
 ├── configs/
 ├── data/
 │   ├── raw/
-│   │   ├── gold/
-│   │   ├── validation/
-│   │   └── test/
+│   │   ├── gold/                         # data_val.xlsx
+│   │   ├── validation/                   # audio + audio_profiles
+│   │   └── test/                         # Питер FM видео/аудио
 │   ├── interim/
+│   ├── models/                           # intent_classifier.joblib
 │   └── processed/
+│       ├── gold_dialogues.jsonl          # 1170 реплик для обучения
+│       └── gold_stats.json
 ├── notebooks/
+│   └── validation_postprocess_and_evaluation_local.ipynb
 ├── reports/
 └── src/
+    ├── pipeline.py                       # главный orchestrator
+    ├── rule_based_intent.py              # rule-based извлечение
+    ├── ml_intent.py                      # ML-классификатор (TF-IDF + LR)
+    ├── train_intent_model.py             # CLI обучения ML-модели
+    ├── predict_intent_model.py           # CLI инференса ML-модели
+    ├── evaluate.py                       # CLI оценки предсказаний
+    ├── pair_formatter.py                 # агрегация в opening/closing
+    ├── speaker_id.py                     # Resemblyzer speaker attribution
+    ├── utterance_builder.py              # сборка реплик из ASR+diarization
+    ├── validation_io.py                  # чтение validation Excel
+    ├── asr.py                            # faster-whisper ASR
+    ├── diarization.py                    # pyannote diarization
+    └── legacy/                           # исходные стаб-файлы (архив)
 ```
-
