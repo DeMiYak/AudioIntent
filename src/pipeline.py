@@ -216,22 +216,55 @@ def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     windows_dir.mkdir(parents=True, exist_ok=True)
 
-    windows = load_validation_windows(args.gold_excel, sheet_name=args.validation_sheet)
+    if args.scan_windows:
+        # Test-film mode: scan existing chunk directories instead of reading gold Excel.
+        scan_root = Path(args.transcript_input_dir) if args.transcript_input_dir else windows_dir
+        chunk_dirs = sorted(p for p in scan_root.iterdir() if p.is_dir()) if scan_root.exists() else []
+        windows = []
+        for chunk_dir in chunk_dirs:
+            info_path = chunk_dir / "chunk_info.json"
+            if info_path.exists():
+                with info_path.open(encoding="utf-8") as _f:
+                    info = json.load(_f)
+                windows.append({
+                    "window_id": info["window_id"],
+                    "row_id": info["chunk_idx"],
+                    "start_sec": info["start_sec"],
+                    "end_sec": info["end_sec"],
+                    "duration_sec": info["duration_sec"],
+                    "film": info.get("film"),
+                })
+            else:
+                windows.append({
+                    "window_id": chunk_dir.name,
+                    "row_id": len(windows) + 1,
+                    "start_sec": 0.0,
+                    "end_sec": 0.0,
+                    "duration_sec": 0.0,
+                    "film": None,
+                })
+        gold_output_path = None
+    else:
+        windows = load_validation_windows(args.gold_excel, sheet_name=args.validation_sheet)
+        gold_df = build_gold_dataframe_for_evaluation(windows)
+        gold_output_path = save_dataframe_to_excel(gold_df, args.gold_output)
+
     if args.limit is not None:
         windows = windows[: args.limit]
 
     if not windows:
         raise RuntimeError("Не найдено ни одного validation-окна.")
 
-    media_input = Path(args.media_input) if args.media_input else auto_detect_media_input(args.validation_dir)
-    if media_input is None or not media_input.exists():
-        raise FileNotFoundError(
-            "Не найден media input для validation-фильма. Передайте --media-input "
-            "или положите файл в data/raw/validation."
-        )
-
-    gold_df = build_gold_dataframe_for_evaluation(windows)
-    gold_output_path = save_dataframe_to_excel(gold_df, args.gold_output)
+    media_input = None
+    if not args.scan_windows:
+        media_input = Path(args.media_input) if args.media_input else auto_detect_media_input(args.validation_dir)
+        if media_input is None or not media_input.exists():
+            raise FileNotFoundError(
+                "Не найден media input для validation-фильма. Передайте --media-input "
+                "или положите файл в data/raw/validation."
+            )
+    elif args.media_input:
+        media_input = Path(args.media_input)
 
     lexicon: dict[str, list[dict[str, Any]]] | None = None
     compiled_lexicon: dict[str, Any] | None = None
@@ -294,14 +327,17 @@ def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         predictions_path = window_dir / "predictions.jsonl"
         summary_path = window_dir / "summary.json"
 
-        prepare_audio(
-            media_input=media_input,
-            audio_output=prepared_audio_path,
-            start_sec=effective_start,
-            duration_sec=duration_sec,
-            sample_rate=args.sample_rate,
-            channels=args.channels,
-        )
+        if args.scan_windows and prepared_audio_path.exists():
+            pass  # audio already created by chunk_film.py
+        else:
+            prepare_audio(
+                media_input=media_input,
+                audio_output=prepared_audio_path,
+                start_sec=effective_start,
+                duration_sec=duration_sec,
+                sample_rate=args.sample_rate,
+                channels=args.channels,
+            )
 
         transcript: dict[str, Any] | None = None
         diarization_result: dict[str, Any] | None = None
@@ -530,7 +566,7 @@ def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             "asr_only" if args.only_asr else "diarization_only" if args.only_diarization else "full_pipeline"
         ),
         "extracted_pairs_output": str(extracted_pairs_path) if extracted_pairs_path is not None else None,
-        "gold_output": str(gold_output_path),
+        "gold_output": str(gold_output_path) if gold_output_path is not None else None,
         "window_summaries": all_window_summaries,
     }
     dump_json(output_dir / "run_summary.json", overall_summary)
@@ -555,6 +591,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--gold-output", type=str, default="artifacts/validation_status_svoboden_asr_diarization/gold.xlsx")
 
+    parser.add_argument(
+        "--scan-windows", action="store_true",
+        help=(
+            "Test-film mode: scan --transcript-input-dir (or output-dir/windows) for existing "
+            "chunk directories instead of loading windows from --gold-excel. "
+            "Use after running src.chunk_film."
+        ),
+    )
     parser.add_argument("--transcript-input-dir", type=str, default=None)
     parser.add_argument("--diarization-input-dir", type=str, default=None)
     parser.add_argument("--skip-asr", action="store_true")
@@ -655,7 +699,8 @@ def main() -> None:
 
     summary = run_validation_pipeline(args)
     print(f"Validation pipeline завершён. Окон с обработкой: {summary['num_windows']}")
-    print(f"Gold сохранён в: {summary['gold_output']}")
+    if summary.get("gold_output"):
+        print(f"Gold сохранён в: {summary['gold_output']}")
     if summary.get("extracted_pairs_output"):
         print(f"Predictions сохранены в: {summary['extracted_pairs_output']}")
     else:
