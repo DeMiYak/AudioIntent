@@ -383,45 +383,82 @@ def assign_speakers_to_characters(
 ) -> list[dict[str, Any]]:
     """
     Для каждого speaker_label ищет наиболее похожего персонажа.
+
+    Использует жадное взаимоисключающее сопоставление (one-to-one):
+    на каждом шаге берётся глобально лучшая пара (speaker, character),
+    после чего оба исключаются из дальнейшего рассмотрения.
+    Это предотвращает ситуацию, когда два разных спикера получают
+    одного и того же персонажа.
     """
-    assignments: list[dict[str, Any]] = []
+    if not speaker_embeddings or not character_embeddings:
+        return [
+            {
+                "speaker_label": sl,
+                "speaker_name": "unknown",
+                "status": "no_character_embeddings",
+                "best_similarity": None,
+                "top_candidates": [],
+            }
+            for sl in sorted(speaker_embeddings)
+        ]
 
-    for speaker_label, speaker_emb in sorted(speaker_embeddings.items()):
-        scored_candidates: list[dict[str, Any]] = []
+    # Build full similarity matrix and per-speaker top-k for reporting
+    speaker_labels = sorted(speaker_embeddings)
+    all_scores: dict[str, list[dict[str, Any]]] = {}
+    pairs: list[tuple[float, str, str]] = []  # (sim, speaker_label, character_name)
 
+    for speaker_label in speaker_labels:
+        speaker_emb = speaker_embeddings[speaker_label]
+        scored: list[dict[str, Any]] = []
         for character_name, character_emb in character_embeddings.items():
             sim = cosine_similarity(speaker_emb, character_emb)
-            scored_candidates.append(
+            scored.append({"character_name": character_name, "similarity": round(sim, 4)})
+            pairs.append((sim, speaker_label, character_name))
+        scored.sort(key=lambda x: (-x["similarity"], x["character_name"]))
+        all_scores[speaker_label] = scored
+
+    # Greedy one-to-one matching: repeatedly pick the globally best available pair
+    pairs.sort(key=lambda x: -x[0])
+    assigned_speakers: set[str] = set()
+    assigned_characters: set[str] = set()
+    final_assignment: dict[str, tuple[str, float]] = {}  # speaker_label -> (character_name, sim)
+
+    for sim, speaker_label, character_name in pairs:
+        if speaker_label in assigned_speakers or character_name in assigned_characters:
+            continue
+        if sim < similarity_threshold:
+            break  # pairs are sorted descending; nothing better left
+        final_assignment[speaker_label] = (character_name, sim)
+        assigned_speakers.add(speaker_label)
+        assigned_characters.add(character_name)
+
+    # Build output in same format as before
+    assignments: list[dict[str, Any]] = []
+    for speaker_label in speaker_labels:
+        scored_candidates = all_scores[speaker_label]
+        best_scored = scored_candidates[0] if scored_candidates else None
+
+        if speaker_label in final_assignment:
+            character_name, sim = final_assignment[speaker_label]
+            assignments.append(
                 {
-                    "character_name": character_name,
-                    "similarity": round(sim, 4),
+                    "speaker_label": speaker_label,
+                    "speaker_name": character_name,
+                    "status": "matched",
+                    "best_similarity": best_scored["similarity"] if best_scored else None,
+                    "top_candidates": scored_candidates[:top_k],
                 }
             )
-
-        scored_candidates.sort(key=lambda x: (-x["similarity"], x["character_name"]))
-
-        if scored_candidates:
-            best = scored_candidates[0]
-            if best["similarity"] >= similarity_threshold:
-                speaker_name = best["character_name"]
-                status = "matched"
-            else:
-                speaker_name = "unknown"
-                status = "below_threshold"
         else:
-            best = None
-            speaker_name = "unknown"
-            status = "no_character_embeddings"
-
-        assignments.append(
-            {
-                "speaker_label": speaker_label,
-                "speaker_name": speaker_name,
-                "status": status,
-                "best_similarity": best["similarity"] if best else None,
-                "top_candidates": scored_candidates[:top_k],
-            }
-        )
+            assignments.append(
+                {
+                    "speaker_label": speaker_label,
+                    "speaker_name": "unknown",
+                    "status": "below_threshold",
+                    "best_similarity": best_scored["similarity"] if best_scored else None,
+                    "top_candidates": scored_candidates[:top_k],
+                }
+            )
 
     return assignments
 
