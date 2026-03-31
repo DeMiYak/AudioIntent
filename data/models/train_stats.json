@@ -1,0 +1,41 @@
+{
+  "num_records": 1170,
+  "label_counts": {
+    "none": 582,
+    "contact_open": 413,
+    "contact_close": 175
+  },
+  "train_classification_report": {
+    "contact_open": {
+      "precision": 0.8772378516624041,
+      "recall": 0.8305084745762712,
+      "f1-score": 0.8532338308457711,
+      "support": 413.0
+    },
+    "contact_close": {
+      "precision": 0.7837837837837838,
+      "recall": 0.9942857142857143,
+      "f1-score": 0.8765743073047859,
+      "support": 175.0
+    },
+    "none": {
+      "precision": 0.8886894075403949,
+      "recall": 0.8505154639175257,
+      "f1-score": 0.8691834942932397,
+      "support": 582.0
+    },
+    "accuracy": 0.864957264957265,
+    "macro avg": {
+      "precision": 0.8499036809955277,
+      "recall": 0.891769884259837,
+      "f1-score": 0.8663305441479322,
+      "support": 1170.0
+    },
+    "weighted avg": {
+      "precision": 0.8689560940916624,
+      "recall": 0.864957264957265,
+      "f1-score": 0.8646588629028261,
+      "support": 1170.0
+    }
+  }
+}
