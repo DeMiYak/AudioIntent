@@ -13,7 +13,7 @@ from .rule_based_intent import (
     compile_lexicon,
     extract_lexicon_from_gold,
     load_jsonl,
-    predict_for_records,
+    predict_for_records as rbi_predict_for_records,
     save_json as save_json_generic,
 )
 from .validation_io import build_gold_dataframe_for_evaluation, load_validation_windows, save_dataframe_to_excel
@@ -154,6 +154,55 @@ def stage_mode_flags(args: argparse.Namespace) -> dict[str, bool]:
     }
 
 
+def _run_intent_extraction(
+    utterances: list[dict[str, Any]],
+    intent_mode: str,
+    compiled_lexicon: dict[str, Any] | None,
+    ml_model: Any | None,
+) -> list[dict[str, Any]]:
+    """
+    Dispatches intent extraction to rule-based, ML, or combined mode.
+
+    intent_mode: 'rule' | 'ml' | 'combined'
+    Combined = union of both; duplicate (same utterance_id + intent_type) deduplicated.
+    """
+    from .ml_intent import predict_for_records as ml_predict_for_records
+
+    if intent_mode == "rule":
+        return rbi_predict_for_records(
+            records=utterances,
+            compiled_lexicon=compiled_lexicon or {},
+        )
+
+    if intent_mode == "ml":
+        if ml_model is None:
+            raise RuntimeError("--intent-mode ml requires --ml-model to be provided")
+        return ml_predict_for_records(records=utterances, model=ml_model)
+
+    # combined: merge, keeping rule-based predictions where spans overlap
+    rbi_preds = rbi_predict_for_records(
+        records=utterances,
+        compiled_lexicon=compiled_lexicon or {},
+    )
+    if ml_model is None:
+        return rbi_preds
+    ml_preds = ml_predict_for_records(records=utterances, model=ml_model)
+
+    # Deduplicate by (utterance_id, intent_type): rule-based takes priority
+    seen: set[tuple[str, str]] = set()
+    merged: list[dict[str, Any]] = []
+    for pred in rbi_preds:
+        key = (str(pred.get("utterance_id", "")), str(pred.get("intent_type", "")))
+        seen.add(key)
+        merged.append(pred)
+    for pred in ml_preds:
+        key = (str(pred.get("utterance_id", "")), str(pred.get("intent_type", "")))
+        if key not in seen:
+            seen.add(key)
+            merged.append(pred)
+    return merged
+
+
 def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
     modes = stage_mode_flags(args)
 
@@ -181,6 +230,7 @@ def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
 
     lexicon: dict[str, list[dict[str, Any]]] | None = None
     compiled_lexicon: dict[str, Any] | None = None
+    ml_model = None
     encoder = None
     character_embeddings = None
     character_profiles: list[dict[str, Any]] = []
@@ -191,6 +241,10 @@ def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         lexicon = extract_lexicon_from_gold(fit_records, min_freq=args.min_freq)
         compiled_lexicon = compile_lexicon(lexicon)
         save_json_generic(lexicon, output_dir / "rule_lexicon.json")
+
+        if args.intent_mode in ("ml", "combined") and args.ml_model:
+            from .ml_intent import load_model as load_ml_model
+            ml_model = load_ml_model(args.ml_model)
 
         samples_dir = Path(args.samples_dir) if args.samples_dir else auto_detect_samples_dir(args.validation_dir)
         if samples_dir is None or not samples_dir.exists():
@@ -407,9 +461,11 @@ def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         save_jsonl_speaker(utterances_named, utterances_named_path)
         save_json_speaker(assignments, assignments_path)
 
-        predictions = predict_for_records(
-            records=utterances_named,
+        predictions = _run_intent_extraction(
+            utterances=utterances_named,
+            intent_mode=args.intent_mode,
             compiled_lexicon=compiled_lexicon,
+            ml_model=ml_model,
         )
         save_jsonl_speaker(predictions, predictions_path)
 
@@ -534,6 +590,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--unknown-speaker-label", type=str, default="unknown_speaker")
     parser.add_argument("--unknown-speaker-name", type=str, default="unknown")
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--intent-mode",
+        type=str,
+        default="rule",
+        choices=["rule", "ml", "combined"],
+        help=(
+            "Метод извлечения намерений: "
+            "'rule' = только rule-based (default), "
+            "'ml' = только ML-классификатор, "
+            "'combined' = объединение обоих (rule-based имеет приоритет при совпадении)."
+        ),
+    )
+    parser.add_argument(
+        "--ml-model",
+        type=str,
+        default=None,
+        help="Путь к обученной ML-модели (.joblib). Требуется для --intent-mode ml|combined.",
+    )
     parser.add_argument(
         "--diarization-segment-mode",
         type=str,
