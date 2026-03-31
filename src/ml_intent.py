@@ -23,21 +23,49 @@ def _extract_representative_phrase(text: str, intent_type: str) -> str:
     """
     Returns a short representative phrase from the utterance text.
 
-    contact_open  -> first sentence
-    contact_close -> last sentence
+    Strategy (in priority order):
+    1. If a MANUAL_PATTERN matches anywhere in the text, return that matched span
+       (same short phrase the rule-based system would produce).
+    2. If an OPEN_STRONG / CLOSE_STRONG marker appears, return the matched token.
+    3. Fall back to first sentence (opening) or last sentence (closing).
 
-    This makes ML output comparable to rule-based output (short phrases)
-    so the evaluator's exact-match P/R/F1 can score them.
+    This ensures ML-only predictions produce short phrases comparable to gold,
+    rather than outputting the full utterance text.
     """
-    from .rule_based_intent import split_into_sentence_spans
+    from .rule_based_intent import (
+        CLOSE_STRONG,
+        MANUAL_PATTERNS,
+        OPEN_STRONG,
+        TOKEN_PATTERN,
+        normalize_for_matching,
+        split_into_sentence_spans,
+    )
 
+    # 1. Check MANUAL_PATTERNS first (most specific)
+    for pattern_info in MANUAL_PATTERNS:
+        if pattern_info["intent_type"] != intent_type:
+            continue
+        m = pattern_info["pattern"].search(text)
+        if m:
+            raw = text[m.start():m.end()].strip(_TRIM_CHARS).rstrip(_TRIM_RIGHT_CHARS).strip()
+            if raw:
+                return raw
+
+    # 2. Check strong marker tokens
+    strong_set = OPEN_STRONG if intent_type == "contact_open" else CLOSE_STRONG
+    normalized = normalize_for_matching(text)
+    for token in TOKEN_PATTERN.findall(normalized):
+        if token in strong_set:
+            return token
+
+    # 3. Fall back to first / last sentence
     spans = split_into_sentence_spans(text)
     if not spans:
         raw = text
     elif intent_type == "contact_open":
         start, end = spans[0]
         raw = text[start:end]
-    else:  # contact_close
+    else:
         start, end = spans[-1]
         raw = text[start:end]
 
