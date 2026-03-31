@@ -15,6 +15,35 @@ from sklearn.preprocessing import LabelEncoder
 
 LABELS = ["none", "contact_open", "contact_close"]
 
+_TRIM_CHARS = " \t\n,;:-—–"
+_TRIM_RIGHT_CHARS = _TRIM_CHARS + ".!?"
+
+
+def _extract_representative_phrase(text: str, intent_type: str) -> str:
+    """
+    Returns a short representative phrase from the utterance text.
+
+    contact_open  -> first sentence
+    contact_close -> last sentence
+
+    This makes ML output comparable to rule-based output (short phrases)
+    so the evaluator's exact-match P/R/F1 can score them.
+    """
+    from .rule_based_intent import split_into_sentence_spans
+
+    spans = split_into_sentence_spans(text)
+    if not spans:
+        raw = text
+    elif intent_type == "contact_open":
+        start, end = spans[0]
+        raw = text[start:end]
+    else:  # contact_close
+        start, end = spans[-1]
+        raw = text[start:end]
+
+    raw = raw.strip(_TRIM_CHARS).rstrip(_TRIM_RIGHT_CHARS).strip()
+    return raw or text.strip()
+
 
 # ---------------------------------------------------------------------------
 # Label extraction
@@ -179,13 +208,14 @@ def predict_for_records(
         label_idx = model.classes_.index(label)
         confidence = float(prob_row[label_idx])
         text = str(rec.get("text") or "")
+        expression = _extract_representative_phrase(text, label)
 
         predictions.append({
             "dialogue_id": rec.get("dialogue_id", ""),
             "utterance_id": rec.get("utterance_id", ""),
             "speaker_name": rec.get("speaker_name", "unknown"),
             "source_text": text,
-            "expression": text,
+            "expression": expression,
             "intent_type": label,
             "char_start": 0,
             "char_end": len(text),
