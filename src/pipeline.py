@@ -72,6 +72,25 @@ def auto_detect_samples_dir(validation_dir: str | Path) -> Path | None:
     return None
 
 
+def select_diarization_segments(
+    diarization_result: dict[str, Any],
+    mode: str,
+) -> list[dict[str, Any]]:
+    """
+    Выбирает нужный вид сегментов из diarization.json.
+
+    mode='auto'      -> diarization_result["segments"]  (обычно == exclusive)
+    mode='regular'   -> diarization_result["regular_segments"] (fallback: segments)
+    mode='exclusive' -> diarization_result["exclusive_segments"] (fallback: segments)
+    """
+    fallback = diarization_result.get("segments", [])
+    if mode == "regular":
+        return diarization_result.get("regular_segments", fallback)
+    if mode == "exclusive":
+        return diarization_result.get("exclusive_segments", fallback)
+    return fallback
+
+
 def discoverable_audio_count(path: str | Path) -> int:
     path = Path(path)
     return sum(1 for fp in path.rglob("*") if fp.is_file() and fp.suffix.lower() in MEDIA_EXTENSIONS)
@@ -344,7 +363,12 @@ def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             save_jsonl as save_jsonl_utterances,
         )
 
-        diarization_segments = normalize_diarization_segments(diarization_result)
+        selected_raw_segments = select_diarization_segments(
+            diarization_result, args.diarization_segment_mode
+        )
+        diarization_segments = normalize_diarization_segments(
+            {"segments": selected_raw_segments}
+        )
         timed_units, used_word_level = extract_timed_units_from_asr(
             asr_data=transcript,
             diarization_segments=diarization_segments,
@@ -417,6 +441,7 @@ def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             "num_predictions": len(predictions),
             "num_assignments": len(assignments),
             "used_word_level_alignment": used_word_level,
+            "diarization_segment_mode": args.diarization_segment_mode,
             "predicted_opening": row.get("opening"),
             "predicted_closing": row.get("closing"),
             "transcript_source": transcript_source,
@@ -460,13 +485,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-dir", type=str, default="data/raw/validation")
     parser.add_argument("--media-input", type=str, default=None)
     parser.add_argument("--samples-dir", type=str, default=None)
-    parser.add_argument("--output-dir", type=str, default="artifacts/validation_status_svoboden")
+    parser.add_argument("--output-dir", type=str, default="artifacts/validation_status_svoboden_asr_diarization")
     parser.add_argument(
         "--extracted-pairs-output",
         type=str,
-        default="artifacts/validation_status_svoboden/extracted_pairs.xlsx",
+        default="artifacts/validation_status_svoboden_asr_diarization/extracted_pairs.xlsx",
     )
-    parser.add_argument("--gold-output", type=str, default="artifacts/validation_status_svoboden/gold.xlsx")
+    parser.add_argument("--gold-output", type=str, default="artifacts/validation_status_svoboden_asr_diarization/gold.xlsx")
 
     parser.add_argument("--transcript-input-dir", type=str, default=None)
     parser.add_argument("--diarization-input-dir", type=str, default=None)
@@ -509,6 +534,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--unknown-speaker-label", type=str, default="unknown_speaker")
     parser.add_argument("--unknown-speaker-name", type=str, default="unknown")
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--diarization-segment-mode",
+        type=str,
+        default="auto",
+        choices=["auto", "regular", "exclusive"],
+        help=(
+            "Какой вид сегментов брать из diarization.json для utterance building. "
+            "'auto' = поле 'segments' (текущее поведение, обычно == exclusive). "
+            "'regular' = поле 'regular_segments'. "
+            "'exclusive' = поле 'exclusive_segments'."
+        ),
+    )
 
     return parser.parse_args()
 

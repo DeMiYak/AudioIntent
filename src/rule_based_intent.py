@@ -58,6 +58,11 @@ OPEN_MANUAL_RULES = {
     "would_you_like_anything",
     "can_i_join_you_for_a_drink",
     "is_that_you_nikita",
+    # Generic Russian greetings (lexicon may miss these)
+    "zdravstvuy_generic",
+    "allo_generic",
+    "privetstvuyu",
+    "dobro_pozhalovat",
 }
 
 CLOSE_MANUAL_RULES = {
@@ -68,6 +73,17 @@ CLOSE_MANUAL_RULES = {
     "be_there_soon",
     "wait_at_time",
     "bye_chao",
+    # Generic Russian farewells (lexicon may miss these)
+    "nu_poka",
+    "nu_vse",
+    "do_vstrechi",
+    "uvidimsya",
+    "vsego_dobrogo",
+    "poka_poka",
+    "do_svidaniya_generic",
+    "davay_poka",
+    "schastlivo_generic",
+    "udachi_generic",
 }
 
 # These often appear in lexicon because of noisy / too-narrow gold spans.
@@ -172,6 +188,124 @@ MANUAL_PATTERNS: list[dict[str, Any]] = [
         "name": "bye_chao",
         "pattern": re.compile(
             r"(?<!\w)чао(?:\s*,\s*[а-яёa-z-]+)?(?=[?.!,]|$)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    # ----------------------------------------------------------------
+    # Generic Russian farewells — добавлены для повышения recall closing
+    # ----------------------------------------------------------------
+    {
+        "intent_type": "contact_close",
+        "name": "nu_poka",
+        "pattern": re.compile(
+            r"(?<!\w)ну[,\s]+пока(?!\w)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_close",
+        "name": "nu_vse",
+        "pattern": re.compile(
+            r"(?<!\w)ну[,\s]+вс[её](?!\w)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_close",
+        "name": "do_vstrechi",
+        "pattern": re.compile(
+            r"(?<!\w)до\s+встречи(?!\w)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_close",
+        "name": "uvidimsya",
+        "pattern": re.compile(
+            r"(?<!\w)увидимся(?!\w)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_close",
+        "name": "vsego_dobrogo",
+        "pattern": re.compile(
+            r"(?<!\w)всего\s+доброго(?!\w)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_close",
+        "name": "poka_poka",
+        "pattern": re.compile(
+            r"(?<!\w)пока[-\s]*пока(?!\w)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_close",
+        "name": "do_svidaniya_generic",
+        "pattern": re.compile(
+            r"(?<!\w)до\s+свидания(?!\w)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_close",
+        "name": "davay_poka",
+        "pattern": re.compile(
+            r"(?<!\w)давай[,\s]+пока(?!\w)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_close",
+        "name": "schastlivo_generic",
+        "pattern": re.compile(
+            r"(?<!\w)счастливо(?!\w)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_close",
+        "name": "udachi_generic",
+        "pattern": re.compile(
+            r"(?<!\w)удачи(?!\w)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    # ----------------------------------------------------------------
+    # Generic Russian greetings — для повышения recall opening
+    # ----------------------------------------------------------------
+    {
+        "intent_type": "contact_open",
+        "name": "zdravstvuy_generic",
+        "pattern": re.compile(
+            r"(?<!\w)здравствуй(?:те)?(?!\w)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_open",
+        "name": "allo_generic",
+        "pattern": re.compile(
+            r"(?<!\w)алл[оa](?!\w)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_open",
+        "name": "privetstvuyu",
+        "pattern": re.compile(
+            r"(?<!\w)приветствую(?!\w)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_open",
+        "name": "dobro_pozhalovat",
+        "pattern": re.compile(
+            r"(?<!\w)добро\s+пожаловать(?!\w)",
             re.IGNORECASE | re.UNICODE,
         ),
     },
@@ -688,9 +822,18 @@ def acceptance_threshold(candidate: dict[str, Any]) -> float:
     phrase = normalize_for_matching(str(candidate.get("expression", "")))
     phrase_token_len = len([tok for tok in tokenize_text(phrase) if re.search(r"\w", tok)])
 
+    # Вычисляем относительную позицию, если есть временна́я информация.
+    rel = candidate.get("relative_position")
+
     if intent_type == "contact_close" and rule_expression in CLOSE_MANUAL_RULES:
+        # Дополнительно снижаем порог для кандидатов ближе к концу окна.
+        if rel is not None and rel >= 0.60:
+            return 0.0
         return 0.5
     if intent_type == "contact_open" and rule_expression in OPEN_MANUAL_RULES:
+        # Снижаем порог для кандидатов ближе к началу окна.
+        if rel is not None and rel <= 0.40:
+            return 0.5
         return 1.0
     if intent_type == "contact_close" and (rule_expression in CLOSE_STRONG or phrase_token_len >= 2):
         return 0.75
