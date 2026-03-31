@@ -193,14 +193,14 @@ python -m src.pipeline --only-diarization  # только diarization
 - `notebooks/validation_postprocess_and_evaluation_local.ipynb`
 - `artifacts/eval_comparison.json` — сравнение метрик по всем версиям
 
-**Текущие метрики (validation_status_svoboden_local_postprocess_v4):**
-| Набор    | P     | R     | F1    | matched |
-|----------|-------|-------|-------|---------|
-| all      | 0.321 | 0.188 | 0.237 | 18      |
-| opening  | 0.318 | 0.175 | 0.226 | 14      |
-| closing  | 0.333 | 0.250 | 0.286 | 4       |
+**Текущие метрики (validation_status_svoboden_local_postprocess_v11, combined mode):**
+| Набор    | P     | R     | F1    | matched | exact |
+|----------|-------|-------|-------|---------|-------|
+| all      | 0.231 | 0.250 | 0.240 | 34      | 8     |
+| opening  | 0.278 | 0.250 | 0.263 | 27      | 7     |
+| closing  | 0.125 | 0.250 | 0.167 | 7       | 1     |
 
-Метрики ограничены качеством speaker attribution (Resemblyzer); дальнейший тюнинг правил нецелесообразен — переходим к ML.
+Метрики ограничены качеством speaker attribution (Resemblyzer). Лучший результат достигается при `--intent-mode combined`, `--similarity-threshold 0.48`, `--ml-confidence-threshold 0.35`. Дальнейший тюнинг на validation нецелесообразен — переходим к тестовому фильму.
 
 **Полный validation pipeline:**
 ```bash
@@ -222,7 +222,7 @@ python -m src.pipeline \
 
 ### Шаг 10. ML-классификатор намерений
 
-**Статус:** реализован, готов к обучению и интеграции в pipeline.
+**Статус:** реализован, обучен, интегрирован в pipeline (combined mode, v11).
 
 **Файлы этапа:**
 - `src/ml_intent.py` — TF-IDF (char n-gram 2-5) + LogisticRegression(class_weight='balanced')
@@ -272,15 +272,40 @@ python -m src.pipeline \
 
 ### Шаг 11. Тестовый фильм «Питер FM»
 
-**Статус:** планируется после стабилизации ML-модели.
+**Статус:** голосовые профили готовы; следующий шаг — ASR + diarization на Colab.
 
-**Входные данные:** только видео/аудио `data/raw/test/piter_fm.*` (без gold).
+**Входные данные:** только видео/аудио `data/raw/test/Peter_FM_2006.mkv` (без gold).
+
+**Голосовые профили** (14 персонажей) извлечены в `data/raw/test/audio_profile/`:
+- Маша Емельянова, Максим Васильев, Лерыч, Костя (основные)
+- Немец-контрактор, Марина, Татьяна Петровна, Директор радио (Феликс)
+- Дима-бедуин, Управдом, Майор Горобец, Генерал Пётр Ефимыч
+- Петя (Друг Макса 1), Мужик на скамейке
+
+Для извлечения профилей использовался `src/extract_audio_profile.py` с командами из `Peter_FM_audio_prompt.txt`.
 
 **Шаги:**
-1. Запустить ASR + diarization на Colab (так же, как для validation-фильма).
-2. Подготовить голосовые профили персонажей (выделить образцы голоса из аудио).
-3. Запустить `pipeline.py` с `--intent-mode ml` или `--intent-mode combined`.
+1. **[выполнен]** Извлечь голосовые профили персонажей — `data/raw/test/audio_profile/`.
+2. **[следующий]** Запустить ASR + diarization на Colab для всего фильма (аналогично validation).
+3. Запустить `pipeline.py` с `--intent-mode combined` и профилями из `data/raw/test/audio_profile/`.
 4. Сохранить `extracted_pairs.xlsx` как итоговый результат.
+
+**Pipeline для тестового фильма:**
+```bash
+python -m src.pipeline \
+  --media-input data/raw/test/Peter_FM_2006.mkv \
+  --samples-dir data/raw/test/audio_profile \
+  --output-dir artifacts/test_piter_fm \
+  --diarization-segment-mode regular \
+  --intent-mode combined \
+  --ml-model data/models/intent_classifier.joblib \
+  --ml-confidence-threshold 0.35 \
+  --similarity-threshold 0.48 \
+  --skip-asr --skip-diarization \
+  --transcript-input-dir artifacts/test_piter_fm_asr_diarization_colab/windows \
+  --diarization-input-dir artifacts/test_piter_fm_asr_diarization_colab/windows \
+  --hf-token YOUR_HF_TOKEN
+```
 
 ---
 
@@ -300,7 +325,7 @@ python -m src.pipeline \
 │   ├── raw/
 │   │   ├── gold/                         # data_val.xlsx
 │   │   ├── validation/                   # audio + audio_profiles
-│   │   └── test/                         # Питер FM видео/аудио
+│   │   └── test/                         # Питер FM видео/аудио + audio_profile/
 │   ├── interim/
 │   ├── models/                           # intent_classifier.joblib
 │   └── processed/
@@ -322,5 +347,6 @@ python -m src.pipeline \
     ├── validation_io.py                  # чтение validation Excel
     ├── asr.py                            # faster-whisper ASR
     ├── diarization.py                    # pyannote diarization
+    ├── extract_audio_profile.py          # извлечение голосовых профилей из видео (ffmpeg)
     └── legacy/                           # исходные стаб-файлы (архив)
 ```
