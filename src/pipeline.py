@@ -159,12 +159,15 @@ def _run_intent_extraction(
     intent_mode: str,
     compiled_lexicon: dict[str, Any] | None,
     ml_model: Any | None,
+    ml_confidence_threshold: float = 0.5,
 ) -> list[dict[str, Any]]:
     """
     Dispatches intent extraction to rule-based, ML, or combined mode.
 
     intent_mode: 'rule' | 'ml' | 'combined'
-    Combined = union of both; duplicate (same utterance_id + intent_type) deduplicated.
+    Combined = union of both; rule-based takes priority on duplicate utterance+intent.
+    ml_confidence_threshold: minimum ML confidence to accept a prediction (applied in
+      both 'ml' and 'combined' modes).
     """
     from .ml_intent import predict_for_records as ml_predict_for_records
 
@@ -177,7 +180,8 @@ def _run_intent_extraction(
     if intent_mode == "ml":
         if ml_model is None:
             raise RuntimeError("--intent-mode ml requires --ml-model to be provided")
-        return ml_predict_for_records(records=utterances, model=ml_model)
+        preds = ml_predict_for_records(records=utterances, model=ml_model)
+        return [p for p in preds if float(p.get("confidence", 1.0)) >= ml_confidence_threshold]
 
     # combined: merge, keeping rule-based predictions where spans overlap
     rbi_preds = rbi_predict_for_records(
@@ -187,6 +191,7 @@ def _run_intent_extraction(
     if ml_model is None:
         return rbi_preds
     ml_preds = ml_predict_for_records(records=utterances, model=ml_model)
+    ml_preds = [p for p in ml_preds if float(p.get("confidence", 1.0)) >= ml_confidence_threshold]
 
     # Deduplicate by (utterance_id, intent_type): rule-based takes priority
     seen: set[tuple[str, str]] = set()
@@ -466,6 +471,7 @@ def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             intent_mode=args.intent_mode,
             compiled_lexicon=compiled_lexicon,
             ml_model=ml_model,
+            ml_confidence_threshold=args.ml_confidence_threshold,
         )
         save_jsonl_speaker(predictions, predictions_path)
 
@@ -607,6 +613,16 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Путь к обученной ML-модели (.joblib). Требуется для --intent-mode ml|combined.",
+    )
+    parser.add_argument(
+        "--ml-confidence-threshold",
+        type=float,
+        default=0.5,
+        help=(
+            "Минимальный порог уверенности ML-предсказания (0.0–1.0). "
+            "Предсказания ниже порога отбрасываются. "
+            "Применяется в режимах ml и combined. По умолчанию 0.5."
+        ),
     )
     parser.add_argument(
         "--diarization-segment-mode",
