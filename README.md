@@ -286,26 +286,33 @@ python -m src.pipeline \
 
 **Шаги:**
 1. **[выполнен]** Извлечь голосовые профили персонажей — `data/raw/test/audio_profile/`.
-2. **[следующий]** Запустить ASR + diarization на Colab для всего фильма (аналогично validation).
-3. Запустить `pipeline.py` с `--intent-mode combined` и профилями из `data/raw/test/audio_profile/`.
-4. Сохранить `extracted_pairs.xlsx` как итоговый результат.
-
-**Pipeline для тестового фильма:**
-```bash
-python -m src.pipeline \
-  --media-input data/raw/test/Peter_FM_2006.mkv \
-  --samples-dir data/raw/test/audio_profile \
-  --output-dir artifacts/test_piter_fm \
-  --diarization-segment-mode regular \
-  --intent-mode combined \
-  --ml-model data/models/intent_classifier.joblib \
-  --ml-confidence-threshold 0.35 \
-  --similarity-threshold 0.48 \
-  --skip-asr --skip-diarization \
-  --transcript-input-dir artifacts/test_piter_fm_asr_diarization_colab/windows \
-  --diarization-input-dir artifacts/test_piter_fm_asr_diarization_colab/windows \
-  --hf-token YOUR_HF_TOKEN
-```
+2. **[следующий]** Разбить фильм на чанки по 10 минут:
+   ```bash
+   python -m src.chunk_film \
+     --input data/raw/test/Peter_FM_2006.mkv \
+     --output-dir artifacts/test_piter_fm_asr_colab/windows \
+     --chunk-duration 600
+   ```
+3. Запустить ASR на Colab (`notebooks/google_colab_asr_pipeline copy.ipynb`).
+4. Запустить diarization на Colab (`notebooks/google_colab_diarization_pipeline_venv copy.ipynb`).
+5. Запустить постпроцессинг локально:
+   ```bash
+   python -m src.pipeline \
+     --scan-windows \
+     --transcript-input-dir artifacts/test_piter_fm_asr_colab/windows \
+     --diarization-input-dir artifacts/test_piter_fm_asr_colab/windows \
+     --samples-dir data/raw/test/audio_profile \
+     --output-dir artifacts/test_piter_fm \
+     --extracted-pairs-output artifacts/test_piter_fm/extracted_pairs.xlsx \
+     --diarization-segment-mode regular \
+     --intent-mode combined \
+     --ml-model data/models/intent_classifier.joblib \
+     --ml-confidence-threshold 0.35 \
+     --similarity-threshold 0.48 \
+     --skip-asr --skip-diarization \
+     --fit-input data/processed/gold_dialogues.jsonl
+   ```
+6. Сохранить `extracted_pairs.xlsx` как итоговый результат.
 
 ---
 
@@ -347,6 +354,6 @@ python -m src.pipeline \
     ├── validation_io.py                  # чтение validation Excel
     ├── asr.py                            # faster-whisper ASR
     ├── diarization.py                    # pyannote diarization
-    ├── extract_audio_profile.py          # извлечение голосовых профилей из видео (ffmpeg)
-    └── legacy/                           # исходные стаб-файлы (архив)
+    ├── chunk_film.py                     # разбивка фильма на чанки для тестового пайплайна
+    └── extract_audio_profile.py          # извлечение голосовых профилей из видео (ffmpeg)
 ```
