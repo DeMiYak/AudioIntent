@@ -167,15 +167,15 @@ python -m src.export_validation_gold \
 
 **Статус:** выполнены на Colab; артефакты хранятся локально.
 
+**Файлы этапа:**
+Сначала работаем с ASR notebook:
+- `notebooks/google_colab_asr_pipeline.ipynb`
+Затем с Diarization notebook:
+- `notebooks/google_colab_diarization_pipeline_venv.ipynb`
+
 **Артефакты:**
 - `artifacts/validation_status_svoboden_asr_diarization_colab/windows/val_NNN_YYYYY/`
   - `audio.wav`, `transcript.json`, `diarization.json`
-
-Для повторного запуска:
-```bash
-python -m src.pipeline --only-asr   # только ASR
-python -m src.pipeline --only-diarization  # только diarization
-```
 
 ---
 
@@ -282,16 +282,12 @@ python -m src.pipeline \
 
 **Входные данные:** только видео/аудио `data/raw/test/Peter_FM_2006.mkv` (без gold).
 
-**Голосовые профили** (14 персонажей) извлечены в `data/raw/test/audio_profile/`:
-- Маша Емельянова, Максим Васильев, Лерыч, Костя (основные)
-- Немец-контрактор, Марина, Татьяна Петровна, Директор радио (Феликс)
-- Дима-бедуин, Управдом, Майор Горобец, Генерал Пётр Ефимыч
-- Петя (Друг Макса 1), Мужик на скамейке
-
-Для извлечения профилей использовался `src/extract_audio_profile.py` с командами из `Peter_FM_audio_prompt.txt`.
+**Голосовые профили** (14 персонажей) хранятся локально в `data/raw/test/audio_profile/` (не в git).
+Для воспроизведения: запустить команды из `Peter_FM_audio_prompt.txt` через `src/extract_audio_profile.py`.
+Персонажи: Маша Емельянова, Максим Васильев, Лерыч, Костя, Немец-контрактор, Марина, Татьяна Петровна, Директор радио (Феликс), Дима-бедуин, Управдом, Майор Горобец, Генерал Пётр Ефимыч, Петя (Друг Макса 1), Мужик на скамейке.
 
 **Шаги:**
-1. **[выполнен]** Извлечь голосовые профили персонажей — `data/raw/test/audio_profile/`.
+1. **[выполнен]** Извлечь голосовые профили персонажей с помощью команд из `Peter_FM_audio_prompt.txt`.
 2. **[выполнен]** Разбить фильм на чанки по 10 минут:
    ```bash
    python -m src.chunk_film \
@@ -338,6 +334,9 @@ python -m src.pipeline \
 ```text
 MyDrive/
 └── AudioIntent/
+    ├── notebooks/                             # клонировать из репозитория
+    │   ├── google_colab_asr_pipeline_test_film.ipynb
+    │   └── google_colab_diarization_pipeline_venv_test_film.ipynb
     └── data/
         ├── raw/
         │   └── test/
@@ -346,7 +345,7 @@ MyDrive/
         ├── processed/
         │   └── gold_dialogues.jsonl           # подготовить локально (шаг 2)
         └── artifacts/
-            └── test_piter_fm_asr_diarization_colab/       # создаётся автоматически при ASR
+            └── test_piter_fm_asr_diarization_colab/  # создаётся автоматически при ASR
                 └── windows/
                     ├── chunk_000/
                     │   ├── audio.wav
@@ -374,13 +373,18 @@ MyDrive/
 
 ```text
 .
-├── artifacts/
+├── artifacts/                            # генерируется при запуске, в git только .gitkeep
 │   ├── eval_comparison.json              # сравнение метрик по всем версиям
-│   └── validation_status_svoboden_local_postprocess_vN/
+│   ├── validation_status_svoboden_asr_diarization_colab/  # ASR + diarization (Colab)
+│   ├── validation_status_svoboden_local_postprocess_vN/   # постпроцессинг (локально)
+│   │   ├── extracted_pairs.xlsx
+│   │   ├── gold.xlsx
+│   │   ├── eval_metrics.json
+│   │   └── windows/
+│   ├── test_piter_fm_asr_diarization_colab/               # ASR + diarization тест (Colab)
+│   └── test_piter_fm/                                     # постпроцессинг тест (локально)
 │       ├── extracted_pairs.xlsx
-│       ├── gold.xlsx
-│       ├── eval_metrics.json
-│       └── windows/
+│       └── detailed_pairs.xlsx
 ├── configs/
 ├── data/
 │   ├── raw/
@@ -399,7 +403,6 @@ MyDrive/
 │   ├── google_colab_asr_pipeline_test_film.ipynb # ASR на Colab (тестовый фильм)
 │   ├── google_colab_diarization_pipeline_venv.ipynb          # diarization (validation)
 │   └── google_colab_diarization_pipeline_venv_test_film.ipynb # diarization (тест)
-├── reports/
 └── src/
     ├── pipeline.py                       # главный orchestrator
     ├── rule_based_intent.py              # rule-based извлечение
