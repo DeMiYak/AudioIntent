@@ -43,7 +43,10 @@ opening = "Никита - привет; Алина - здравствуй"
 closing = "Алина - пока"
 ```
 
-Именно такой формат ожидает `src/evaluation.ipynb`.
+- `Временная метка - спикер - фраза - тип`
+- дополнительный вывод, ячейки разделяются на "Время начала", "Время конца", "Спикер - фраза" в столбцах-типах (opening-closing)
+
+ Файл `src/evaluation.ipynb` ожидает `Спикер - фраза`.
 
 ### Что оценивается
 
@@ -81,6 +84,9 @@ closing = "Алина - пока"
 - **joblib** — сериализация ML-модели.
 - **ffmpeg** — извлечение и нормализация аудио.
 - **Jupyter Notebook** — прогон validation pipeline и оценка метрик.
+
+Зависимости для локального запуска: `requirements.txt`.
+Зависимости для Google Colab ноутбуков уже представлены внутри самих ноутбуков. Достаточно просто один раз запустить все ячейки
 
 ---
 
@@ -272,7 +278,7 @@ python -m src.pipeline \
 
 ### Шаг 11. Тестовый фильм «Питер FM»
 
-**Статус:** голосовые профили готовы; следующий шаг — ASR + diarization на Colab.
+**Статус:** выполнен полностью.
 
 **Входные данные:** только видео/аудио `data/raw/test/Peter_FM_2006.mkv` (без gold).
 
@@ -286,21 +292,21 @@ python -m src.pipeline \
 
 **Шаги:**
 1. **[выполнен]** Извлечь голосовые профили персонажей — `data/raw/test/audio_profile/`.
-2. **[следующий]** Разбить фильм на чанки по 10 минут:
+2. **[выполнен]** Разбить фильм на чанки по 10 минут:
    ```bash
    python -m src.chunk_film \
      --input data/raw/test/Peter_FM_2006.mkv \
-     --output-dir artifacts/test_piter_fm_asr_colab/windows \
+     --output-dir artifacts/test_piter_fm_asr_diarization_colab/windows \
      --chunk-duration 600
    ```
-3. Запустить ASR на Colab (`notebooks/google_colab_asr_pipeline copy.ipynb`).
-4. Запустить diarization на Colab (`notebooks/google_colab_diarization_pipeline_venv copy.ipynb`).
-5. Запустить постпроцессинг локально:
+3. **[выполнен]** Запустить ASR на Colab (`notebooks/google_colab_asr_pipeline_test_film.ipynb`).
+4. **[выполнен]** Запустить diarization на Colab (`notebooks/google_colab_diarization_pipeline_venv_test_film.ipynb`).
+5. **[выполнен]** Запустить постпроцессинг локально:
    ```bash
    python -m src.pipeline \
      --scan-windows \
-     --transcript-input-dir artifacts/test_piter_fm_asr_colab/windows \
-     --diarization-input-dir artifacts/test_piter_fm_asr_colab/windows \
+     --transcript-input-dir artifacts/test_piter_fm_asr_diarization_colab/windows \
+     --diarization-input-dir artifacts/test_piter_fm_asr_diarization_colab/windows \
      --samples-dir data/raw/test/audio_profile \
      --output-dir artifacts/test_piter_fm \
      --extracted-pairs-output artifacts/test_piter_fm/extracted_pairs.xlsx \
@@ -312,7 +318,55 @@ python -m src.pipeline \
      --skip-asr --skip-diarization \
      --fit-input data/processed/gold_dialogues.jsonl
    ```
-6. Сохранить `extracted_pairs.xlsx` как итоговый результат.
+6. **[выполнен]** Экспортировать плоскую таблицу событий:
+   ```bash
+   python -m src.export_detailed_pairs \
+     --output-dir artifacts/test_piter_fm \
+     --source-dir artifacts/test_piter_fm_asr_diarization_colab/windows \
+     --film-name "Питер FM" \
+     --exclude-chunk 9 \
+     --excel artifacts/test_piter_fm/detailed_pairs.xlsx
+   ```
+   Результат — `artifacts/test_piter_fm/detailed_pairs.xlsx`: колонки `ID | Фильм | Время начала | Время окончания | Тип | Аннотация | opening | closing`.
+
+---
+
+## Настройка Google Drive для Colab
+
+Ноутбуки ASR и diarization монтируют Google Drive и ожидают следующую структуру папок:
+
+```text
+MyDrive/
+└── AudioIntent/
+    └── data/
+        ├── raw/
+        │   └── test/
+        │       ├── Peter_FM_2006.mkv          # видеофайл фильма
+        │       └── audio_profile/             # голосовые профили (14 папок с WAV)
+        ├── processed/
+        │   └── gold_dialogues.jsonl           # подготовить локально (шаг 2)
+        └── artifacts/
+            └── test_piter_fm_asr_diarization_colab/       # создаётся автоматически при ASR
+                └── windows/
+                    ├── chunk_000/
+                    │   ├── audio.wav
+                    │   ├── chunk_info.json
+                    │   └── transcript.json    # записывается ASR-ноутбуком
+                    └── ...
+```
+
+**Что нужно загрузить вручную перед запуском:**
+- `Peter_FM_2006.mkv` — видеофайл (~466 МБ)
+- `audio_profile/` — голосовые профили (~10 МБ, 14 папок)
+- `gold_dialogues.jsonl` — подготовить локально командой из шага 2 и загрузить (~1 МБ)
+
+**Что создаётся автоматически:**
+- `artifacts/test_piter_fm_asr_diarization_colab/windows/` — чанки + транскрипты создаются ASR-ноутбуком (~170 МБ)
+- `diarization.json` в каждый чанк записывает diarization-ноутбук (~5 МБ суммарно)
+
+**Необходимый объём свободного места на Google Drive:** не менее 1 ГБ.
+
+**HuggingFace token** для ноутбуков нужно получить токен на [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens); модель `pyannote/speaker-diarization-community-1` требует принятия условий использования на странице модели. В Google Colab нужно нажать на ключ в левой панели (`Secrets`) и добавить токен, а затем разрешить доступ (`Notebook Access`).
 
 ---
 
@@ -339,7 +393,12 @@ python -m src.pipeline \
 │       ├── gold_dialogues.jsonl          # 1170 реплик для обучения
 │       └── gold_stats.json
 ├── notebooks/
-│   └── validation_postprocess_and_evaluation_local.ipynb
+│   ├── evaluation.ipynb                          # оценка метрик на validation-выборке
+│   ├── validation_postprocess_and_evaluation_local.ipynb
+│   ├── google_colab_asr_pipeline.ipynb           # ASR на Colab (validation)
+│   ├── google_colab_asr_pipeline_test_film.ipynb # ASR на Colab (тестовый фильм)
+│   ├── google_colab_diarization_pipeline_venv.ipynb          # diarization (validation)
+│   └── google_colab_diarization_pipeline_venv_test_film.ipynb # diarization (тест)
 ├── reports/
 └── src/
     ├── pipeline.py                       # главный orchestrator
@@ -355,5 +414,6 @@ python -m src.pipeline \
     ├── asr.py                            # faster-whisper ASR
     ├── diarization.py                    # pyannote diarization
     ├── chunk_film.py                     # разбивка фильма на чанки для тестового пайплайна
-    └── extract_audio_profile.py          # извлечение голосовых профилей из видео (ffmpeg)
+    ├── extract_audio_profile.py          # извлечение голосовых профилей из видео (ffmpeg)
+    └── export_detailed_pairs.py          # экспорт плоской таблицы событий в Excel
 ```
