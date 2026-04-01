@@ -105,6 +105,14 @@ AMBIGUOUS_CLOSE_RULES: set[str] = set()
 MANUAL_PATTERNS: list[dict[str, Any]] = [
     {
         "intent_type": "contact_open",
+        "name": "lets_get_acquainted",
+        "pattern": re.compile(
+            r"(?<!\w)(?:давайте|давай)\s+познакомимся|(?:давайте|давай)\s+знакомиться|познакомимся(?=[?.!,\s]|$)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_open",
         "name": "where_have_i_seen_you",
         "pattern": re.compile(
             r"(?<!\w)где\s+я\s+тебя\s+видел(?=[?.!,]|$)",
