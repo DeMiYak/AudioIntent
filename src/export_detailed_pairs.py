@@ -66,7 +66,7 @@ def load_predictions(output_dir: Path, source_dir: Path | None = None) -> list[d
     return rows
 
 
-def build_dataframe(predictions: list[dict], film_name: str = "") -> "pd.DataFrame":
+def build_dataframe(predictions: list[dict], film_name: str = ""):
     import pandas as pd
 
     # Sort by absolute start time across all chunks
