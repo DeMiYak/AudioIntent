@@ -376,7 +376,7 @@ MyDrive/
 ├── artifacts/                            # генерируется при запуске, в git только .gitkeep
 │   ├── eval_comparison.json              # сравнение метрик по всем версиям
 │   ├── validation_status_svoboden_asr_diarization_colab/  # ASR + diarization (Colab)
-│   ├── validation_status_svoboden_local_postprocess_vN/   # постпроцессинг (локально)
+│   ├── validation_status_svoboden_local_postprocess_vN/   # постпроцессинг (локально, версия vN)
 │   │   ├── extracted_pairs.xlsx
 │   │   ├── gold.xlsx
 │   │   ├── eval_metrics.json
