@@ -318,7 +318,16 @@ def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         effective_end = float(window["end_sec"]) + float(args.window_padding_sec)
         duration_sec = effective_end - effective_start
 
-        prepared_audio_path = window_dir / "audio.wav"
+        if args.scan_windows:
+            source_audio = find_existing_stage_file(
+                current_window_dir=window_dir,
+                filename="audio.wav",
+                input_dir=args.transcript_input_dir,
+                window_id=window["window_id"],
+            )
+            prepared_audio_path = source_audio if source_audio is not None else window_dir / "audio.wav"
+        else:
+            prepared_audio_path = window_dir / "audio.wav"
         transcript_path = window_dir / "transcript.json"
         diarization_path = window_dir / "diarization.json"
         utterances_path = window_dir / "utterances.jsonl"
@@ -327,8 +336,8 @@ def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         predictions_path = window_dir / "predictions.jsonl"
         summary_path = window_dir / "summary.json"
 
-        if args.scan_windows and prepared_audio_path.exists():
-            pass  # audio already created by chunk_film.py
+        if args.scan_windows:
+            pass  # audio already created by chunk_film.py, lives in transcript-input-dir
         else:
             prepare_audio(
                 media_input=media_input,
