@@ -10,8 +10,8 @@ from typing import Any
 
 TOKEN_PATTERN = re.compile(r"\w+|[^\w\s]", re.UNICODE)
 
-# High-precision marker buckets.
-# Strong markers can survive as compact phrases; weak markers usually need context.
+# Группы маркеров высокой точности.
+# Сильные маркеры могут существовать как компактные фразы; слабые маркерам обычно нужен контекст.
 OPEN_STRONG = {
     "алло",
     "алло!",
@@ -58,7 +58,7 @@ OPEN_MANUAL_RULES = {
     "would_you_like_anything",
     "can_i_join_you_for_a_drink",
     "is_that_you_nikita",
-    # Generic Russian greetings (lexicon may miss these)
+    # Общие русские приветствия (лексикон может их пропустить)
     "zdravstvuy_generic",
     "allo_generic",
     "privetstvuyu",
@@ -73,7 +73,7 @@ CLOSE_MANUAL_RULES = {
     "be_there_soon",
     "wait_at_time",
     "bye_chao",
-    # Generic Russian farewells (lexicon may miss these)
+    # Общие русские прощания (лексикон может их пропустить)
     "nu_poka",
     "nu_vse",
     "do_vstrechi",
@@ -86,8 +86,8 @@ CLOSE_MANUAL_RULES = {
     "udachi_generic",
 }
 
-# These often appear in lexicon because of noisy / too-narrow gold spans.
-# Treat them as highly ambiguous when they are used as standalone opening rules.
+# Эти маркеры часто появляются в лексиконе из-за шумных / слишком узких gold-спанов.
+# Считать их крайне неоднозначными при использовании как самостоятельных opening-правил.
 AMBIGUOUS_OPEN_RULES = {
     "а",
     "да",
@@ -101,7 +101,7 @@ AMBIGUOUS_OPEN_RULES = {
 
 AMBIGUOUS_CLOSE_RULES: set[str] = set()
 
-# Manual patterns for validation-style cases where the lexicon is usually too narrow.
+# Ручные паттерны для валидационных случаев, где лексикон обычно слишком узок.
 MANUAL_PATTERNS: list[dict[str, Any]] = [
     {
         "intent_type": "contact_open",
@@ -573,7 +573,7 @@ def expand_match_to_phrase(
     clause_end = sent_start + clause_local_end
     clause_start, clause_end, clause_text = _trim_span(text, clause_start, clause_end)
 
-    # Prefer clause when it is not too long and meaningfully larger than the marker.
+    # Предпочесть клаузу, если она не слишком длинная и заметно больше маркера.
     clause_tokens = tokenize_text(clause_text)
     match_tokens = tokenize_text(text[char_start:char_end])
     if 2 <= len(clause_tokens) <= 12 and len(clause_tokens) > len(match_tokens):
@@ -949,7 +949,7 @@ def predict_for_record(
         score_candidate(item)
         expanded.append(item)
 
-    # Collapse exact duplicate spans within the same intent, keeping the best-scored one.
+    # Схлопнуть точные дублирующиеся спаны в рамках одного намерения, оставив наиболее высокооцнённый.
     best_by_span: dict[tuple[str, int, int], dict[str, Any]] = {}
     for cand in expanded:
         key = (str(cand["intent_type"]), int(cand["char_start"]), int(cand["char_end"]))

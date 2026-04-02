@@ -31,8 +31,8 @@ def load_predictions(output_dir: Path, source_dir: Path | None = None) -> list[d
     """Load predictions, patching source_start_sec from chunk_info.json when missing."""
     windows_dir = output_dir / "windows"
 
-    # Build chunk_start_sec lookup from chunk_info.json files
-    # chunk_info lives in source_dir (transcript-input-dir) or output_dir/windows
+    # Построить таблицу поиска chunk_start_sec из файлов chunk_info.json
+    # chunk_info находится в source_dir (transcript-input-dir) или output_dir/windows
     chunk_start_lookup: dict[str, float] = {}
     search_roots = [d for d in [source_dir, windows_dir] if d is not None]
     for root in search_roots:
@@ -57,7 +57,7 @@ def load_predictions(output_dir: Path, source_dir: Path | None = None) -> list[d
             if not line:
                 continue
             pred = json.loads(line)
-            # Patch missing fields from chunk directory context
+            # Дополнить отсутствующие поля из контекста директории чанка
             if pred.get("source_start_sec") is None:
                 pred["source_start_sec"] = fallback_start
             if pred.get("source_window_id") is None:
@@ -69,13 +69,13 @@ def load_predictions(output_dir: Path, source_dir: Path | None = None) -> list[d
 def build_dataframe(predictions: list[dict], film_name: str = ""):
     import pandas as pd
 
-    # Sort by absolute start time across all chunks
+    # Отсортировать по абсолютному времени начала по всем чанкам
     def abs_start(p: dict) -> float:
         return float(p.get("source_start_sec", 0.0)) + float(p.get("start_time", 0.0))
 
     predictions = sorted(predictions, key=abs_start)
 
-    # Derive film name fallback from any non-empty source_film
+    # Определить запасное название фильма из любого непустого source_film
     if not film_name:
         for p in predictions:
             film_name = p.get("source_film") or ""
@@ -165,7 +165,7 @@ def main(argv: list[str] | None = None) -> None:
     df.to_excel(excel_path, index=False)
     print(f"Saved {len(df)} rows to {excel_path}")
 
-    # Quick summary
+    # Краткая сводка
     print()
     print("By type:")
     print(df["Тип"].value_counts().to_string())

@@ -133,7 +133,7 @@ def main(argv: list[str] | None = None) -> None:
 
         if audio_path.exists() and not args.force:
             print(f"  {window_id}: {start_sec:.1f}s – {end_sec:.1f}s  SKIP (audio.wav exists)")
-            # Still update chunk_info.json in case it's missing
+            # Всё равно обновить chunk_info.json на случай его отсутствия
             info_path.write_text(json.dumps(chunk_info, ensure_ascii=False, indent=2), encoding="utf-8")
             continue
 

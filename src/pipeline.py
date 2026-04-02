@@ -183,7 +183,7 @@ def _run_intent_extraction(
         preds = ml_predict_for_records(records=utterances, model=ml_model)
         return [p for p in preds if float(p.get("confidence", 1.0)) >= ml_confidence_threshold]
 
-    # combined: merge, keeping rule-based predictions where spans overlap
+    # combined: объединение, rule-based предсказания сохраняются при пересечении спанов
     rbi_preds = rbi_predict_for_records(
         records=utterances,
         compiled_lexicon=compiled_lexicon or {},
@@ -193,7 +193,7 @@ def _run_intent_extraction(
     ml_preds = ml_predict_for_records(records=utterances, model=ml_model)
     ml_preds = [p for p in ml_preds if float(p.get("confidence", 1.0)) >= ml_confidence_threshold]
 
-    # Deduplicate by (utterance_id, intent_type): rule-based takes priority
+    # Дедупликация по (utterance_id, intent_type): rule-based имеет приоритет
     seen: set[tuple[str, str]] = set()
     merged: list[dict[str, Any]] = []
     for pred in rbi_preds:
@@ -217,7 +217,7 @@ def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
     windows_dir.mkdir(parents=True, exist_ok=True)
 
     if args.scan_windows:
-        # Test-film mode: scan existing chunk directories instead of reading gold Excel.
+        # Режим тестового фильма: сканировать существующие директории чанков вместо чтения gold Excel.
         scan_root = Path(args.transcript_input_dir) if args.transcript_input_dir else windows_dir
         chunk_dirs = sorted(p for p in scan_root.iterdir() if p.is_dir()) if scan_root.exists() else []
         windows = []
@@ -337,7 +337,7 @@ def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         summary_path = window_dir / "summary.json"
 
         if args.scan_windows:
-            pass  # audio already created by chunk_film.py, lives in transcript-input-dir
+            pass  # аудио уже создано chunk_film.py, находится в transcript-input-dir
         else:
             prepare_audio(
                 media_input=media_input,

@@ -170,9 +170,9 @@ def run_diarization(
         "num_speakers_detected": selected_num_speakers,
         "num_speakers_detected_regular": regular_num_speakers,
         "num_speakers_detected_exclusive": exclusive_num_speakers,
-        # backward-compatible
+        # обратная совместимость
         "segments": selected_segments,
-        # debug / analysis
+        # отладка / анализ
         "regular_segments": regular_segments,
         "exclusive_segments": exclusive_segments,
     }

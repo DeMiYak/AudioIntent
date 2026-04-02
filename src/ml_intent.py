@@ -41,7 +41,7 @@ def _extract_representative_phrase(text: str, intent_type: str) -> str:
         split_into_sentence_spans,
     )
 
-    # 1. Check MANUAL_PATTERNS first (most specific)
+    # 1. Сначала проверить MANUAL_PATTERNS (наиболее специфичные)
     for pattern_info in MANUAL_PATTERNS:
         if pattern_info["intent_type"] != intent_type:
             continue
@@ -51,14 +51,14 @@ def _extract_representative_phrase(text: str, intent_type: str) -> str:
             if raw:
                 return raw
 
-    # 2. Check strong marker tokens
+    # 2. Проверить токены сильных маркеров
     strong_set = OPEN_STRONG if intent_type == "contact_open" else CLOSE_STRONG
     normalized = normalize_for_matching(text)
     for token in TOKEN_PATTERN.findall(normalized):
         if token in strong_set:
             return token
 
-    # 3. Fall back to first / last sentence
+    # 3. Откат к первому / последнему предложению
     spans = split_into_sentence_spans(text)
     if not spans:
         raw = text
@@ -74,7 +74,7 @@ def _extract_representative_phrase(text: str, intent_type: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Label extraction
+# Извлечение меток
 # ---------------------------------------------------------------------------
 
 def get_label(record: dict[str, Any]) -> str:
@@ -94,7 +94,7 @@ def get_label(record: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Dialogue position features
+# Признаки позиции в диалоге
 # ---------------------------------------------------------------------------
 
 def compute_dialogue_positions(records: list[dict[str, Any]]) -> dict[str, float]:
@@ -119,7 +119,7 @@ def compute_dialogue_positions(records: list[dict[str, Any]]) -> dict[str, float
 
 
 # ---------------------------------------------------------------------------
-# Feature building
+# Построение признаков
 # ---------------------------------------------------------------------------
 
 def _records_to_texts(records: list[dict[str, Any]]) -> list[str]:
@@ -146,7 +146,7 @@ def _records_to_numerical(
 
 
 # ---------------------------------------------------------------------------
-# Model container
+# Контейнер модели
 # ---------------------------------------------------------------------------
 
 class IntentClassifier:
@@ -203,7 +203,7 @@ class IntentClassifier:
 
 
 # ---------------------------------------------------------------------------
-# Pipeline-compatible prediction
+# Предсказание, совместимое с пайплайном
 # ---------------------------------------------------------------------------
 
 def predict_for_records(
@@ -258,7 +258,7 @@ def predict_for_records(
 
 
 # ---------------------------------------------------------------------------
-# Serialization
+# Сериализация
 # ---------------------------------------------------------------------------
 
 def save_model(model: IntentClassifier, path: str | Path) -> Path:
@@ -273,7 +273,7 @@ def load_model(path: str | Path) -> IntentClassifier:
 
 
 # ---------------------------------------------------------------------------
-# Training statistics
+# Статистика обучения
 # ---------------------------------------------------------------------------
 
 def compute_train_stats(
@@ -305,7 +305,7 @@ def compute_train_stats(
 
 
 # ---------------------------------------------------------------------------
-# Utility: load JSONL
+# Утилита: загрузка JSONL
 # ---------------------------------------------------------------------------
 
 def load_jsonl(path: str | Path) -> list[dict[str, Any]]:

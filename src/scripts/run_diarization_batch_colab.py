@@ -8,7 +8,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-# Must be set before importing pyannote/lightning/torchmetrics/matplotlib chain.
+# Должно быть установлено до импорта цепочки pyannote/lightning/torchmetrics/matplotlib.
 _current_backend = os.environ.get("MPLBACKEND", "")
 if _current_backend.startswith("module://matplotlib_inline"):
     print(
@@ -139,7 +139,7 @@ def _annotation_to_segments(annotation: Any) -> tuple[list[dict[str, Any]], int]
 def load_audio_for_pyannote(audio_path: str | Path) -> dict[str, Any]:
     audio_path = str(audio_path)
     samples, sample_rate = sf.read(audio_path, dtype="float32", always_2d=True)
-    waveform = torch.from_numpy(samples.T)  # [channels, time]
+    waveform = torch.from_numpy(samples.T)  # [каналы, время]
 
     if waveform.shape[0] > 1:
         _print_fallback("Multi-channel audio detected. Downmixing to mono.")
@@ -231,9 +231,9 @@ def run_diarization_for_audio(
         "num_speakers_detected": selected_num_speakers,
         "num_speakers_detected_regular": regular_num_speakers,
         "num_speakers_detected_exclusive": exclusive_num_speakers,
-        # backward-compatible selected output
+        # обратно совместимый выбранный вывод
         "segments": selected_segments,
-        # full debug output
+        # полный отладочный вывод
         "regular_segments": regular_segments,
         "exclusive_segments": exclusive_segments,
     }
@@ -461,8 +461,8 @@ def main() -> None:
     if args.summary_path:
         summary_path = Path(args.summary_path)
     else:
-        # More intuitive default: summary goes to output_root,
-        # even when diarization.json is written in-place into windows.
+        # Более интуитивный путь по умолчанию: summary сохраняется в output_root,
+        # даже когда diarization.json записывается на месте в папки окон.
         summary_path = Path(args.output_root) / "diarization_run_summary.json"
 
     save_json(summary, summary_path)

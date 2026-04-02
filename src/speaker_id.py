@@ -402,10 +402,10 @@ def assign_speakers_to_characters(
             for sl in sorted(speaker_embeddings)
         ]
 
-    # Build full similarity matrix and per-speaker top-k for reporting
+    # Построить полную матрицу схожести и топ-k для каждого спикера для отчётности
     speaker_labels = sorted(speaker_embeddings)
     all_scores: dict[str, list[dict[str, Any]]] = {}
-    pairs: list[tuple[float, str, str]] = []  # (sim, speaker_label, character_name)
+    pairs: list[tuple[float, str, str]] = []  # (схожесть, speaker_label, имя персонажа)
 
     for speaker_label in speaker_labels:
         speaker_emb = speaker_embeddings[speaker_label]
@@ -417,22 +417,22 @@ def assign_speakers_to_characters(
         scored.sort(key=lambda x: (-x["similarity"], x["character_name"]))
         all_scores[speaker_label] = scored
 
-    # Greedy one-to-one matching: repeatedly pick the globally best available pair
+    # Жадное взаимоисключающее сопоставление: многократно выбираем глобально лучшую доступную пару
     pairs.sort(key=lambda x: -x[0])
     assigned_speakers: set[str] = set()
     assigned_characters: set[str] = set()
-    final_assignment: dict[str, tuple[str, float]] = {}  # speaker_label -> (character_name, sim)
+    final_assignment: dict[str, tuple[str, float]] = {}  # speaker_label -> (имя персонажа, схожесть)
 
     for sim, speaker_label, character_name in pairs:
         if speaker_label in assigned_speakers or character_name in assigned_characters:
             continue
         if sim < similarity_threshold:
-            break  # pairs are sorted descending; nothing better left
+            break  # пары отсортированы по убыванию; ничего лучшего нет
         final_assignment[speaker_label] = (character_name, sim)
         assigned_speakers.add(speaker_label)
         assigned_characters.add(character_name)
 
-    # Build output in same format as before
+    # Сформировать вывод в том же формате, что и прежде
     assignments: list[dict[str, Any]] = []
     for speaker_label in speaker_labels:
         scored_candidates = all_scores[speaker_label]

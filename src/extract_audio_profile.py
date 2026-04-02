@@ -124,7 +124,7 @@ def main(argv: list[str] | None = None) -> None:
     char_dir = Path(args.output_dir) / args.character
     char_dir.mkdir(parents=True, exist_ok=True)
 
-    # Find next available index to avoid overwriting existing samples
+    # Найти следующий доступный индекс, чтобы не перезаписать существующие сэмплы
     existing = sorted(char_dir.glob("*.wav"))
     next_idx = len(existing) + 1
 
