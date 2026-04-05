@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 
 from .ml_intent import (
+    CLASSIFIER_CHOICES,
     IntentClassifier,
     compute_train_stats,
     get_label,
@@ -40,6 +41,12 @@ def main(argv: list[str] | None = None) -> None:
         default=None,
         help="Where to save training statistics JSON (optional)",
     )
+    parser.add_argument(
+        "--classifier",
+        default="lr",
+        choices=CLASSIFIER_CHOICES,
+        help="Тип sklearn-классификатора: lr (default), svm, nb, sgd, ridge",
+    )
     args = parser.parse_args(argv)
 
     print(f"Loading training data from: {args.fit_input}")
@@ -51,8 +58,8 @@ def main(argv: list[str] | None = None) -> None:
     for label, count in sorted(label_counts.items()):
         print(f"  {label}: {count}")
 
-    print("Fitting IntentClassifier...")
-    model = IntentClassifier()
+    print(f"Fitting IntentClassifier (classifier={args.classifier})...")
+    model = IntentClassifier(classifier_type=args.classifier)
     model.fit(records)
     print(f"  Classes: {model.classes_}")
 
