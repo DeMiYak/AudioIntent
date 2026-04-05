@@ -183,7 +183,7 @@ def _run_intent_extraction(
         preds = ml_predict_for_records(records=utterances, model=ml_model)
         return [p for p in preds if float(p.get("confidence", 1.0)) >= ml_confidence_threshold]
 
-    # combined: объединение, rule-based предсказания сохраняются при пересечении спанов
+    # combined: rule-based фильтруется ML-согласием; ML добавляет непокрытые случаи
     rbi_preds = rbi_predict_for_records(
         records=utterances,
         compiled_lexicon=compiled_lexicon or {},
@@ -193,11 +193,26 @@ def _run_intent_extraction(
     ml_preds = ml_predict_for_records(records=utterances, model=ml_model)
     ml_preds = [p for p in ml_preds if float(p.get("confidence", 1.0)) >= ml_confidence_threshold]
 
-    # Дедупликация по (utterance_id, intent_type): rule-based имеет приоритет
+    # Множество пар (utterance_id, intent_type), одобренных ML
+    ml_agreed: set[tuple[str, str]] = {
+        (str(p.get("utterance_id", "")), str(p.get("intent_type", "")))
+        for p in ml_preds
+    }
+
+    # Rule-based пропускаются только если ML согласен с тем же типом для той же реплики.
+    # Исключение: MANUAL_PATTERNS освобождены от фильтра — они добавлялись именно для
+    # случаев, которые ML пропускает.
+    from .rule_based_intent import CLOSE_MANUAL_RULES, OPEN_MANUAL_RULES
+    manual_rule_names = OPEN_MANUAL_RULES | CLOSE_MANUAL_RULES
+
     seen: set[tuple[str, str]] = set()
     merged: list[dict[str, Any]] = []
     for pred in rbi_preds:
         key = (str(pred.get("utterance_id", "")), str(pred.get("intent_type", "")))
+        rule_expr = str(pred.get("rule_expression", ""))
+        is_manual = rule_expr in manual_rule_names
+        if not is_manual and key not in ml_agreed:
+            continue
         seen.add(key)
         merged.append(pred)
     for pred in ml_preds:
