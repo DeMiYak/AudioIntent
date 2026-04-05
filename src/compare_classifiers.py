@@ -1,11 +1,10 @@
 """
-Сравнение ML-классификаторов на validation-выборке.
+Сравнение ML-классификаторов.
 
-Для каждого классификатора:
-  1. Обучает модель на gold_dialogues.jsonl
-  2. Запускает pipeline в combined-режиме на validation-окнах
-  3. Считает метрики по схеме evaluation.ipynb
-  4. Сохраняет сводную таблицу в JSON и печатает в консоль
+Два режима оценки:
+  1. Кросс-валидация на gold_dialogues.jsonl (5-fold, threshold-independent)
+  2. Validation pipeline: обучение на полных данных, запуск на validation-окнах
+     с индивидуально подобранным порогом (threshold sweep по PR-кривой)
 
 Использование:
     python -m src.compare_classifiers \
@@ -23,14 +22,130 @@ import json
 import subprocess
 import sys
 import tempfile
+from collections import defaultdict
 from difflib import SequenceMatcher
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import classification_report, precision_recall_curve
 
-from .ml_intent import CLASSIFIER_CHOICES, IntentClassifier, load_jsonl, save_model
+from .ml_intent import (
+    CLASSIFIER_CHOICES,
+    IntentClassifier,
+    _build_classifier,
+    _records_to_numerical,
+    _records_to_texts,
+    compute_dialogue_positions,
+    compute_neighbour_texts,
+    get_label,
+    load_jsonl,
+    save_model,
+)
+from scipy.sparse import hstack, csr_matrix
+from sklearn.feature_extraction.text import TfidfVectorizer
 
+
+# ---------------------------------------------------------------------------
+# Кросс-валидация
+# ---------------------------------------------------------------------------
+
+def _cv_report(records: list[dict], classifier_type: str, n_splits: int = 5) -> dict:
+    """
+    Стратифицированная k-fold CV на gold_dialogues.jsonl.
+    Возвращает усреднённые precision/recall/F1 по трём классам.
+    """
+    labels = [get_label(r) for r in records]
+    all_preds: list[str] = []
+    all_true: list[str] = []
+
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+    for fold, (train_idx, val_idx) in enumerate(skf.split(records, labels)):
+        train_recs = [records[i] for i in train_idx]
+        val_recs   = [records[i] for i in val_idx]
+
+        # Обучение на fold-train
+        tfidf = TfidfVectorizer(
+            analyzer="char_wb", ngram_range=(2, 5),
+            max_features=50_000, sublinear_tf=True,
+        )
+        clf = _build_classifier(classifier_type)
+
+        train_texts = _records_to_texts(train_recs)
+        train_pos   = compute_dialogue_positions(train_recs)
+        train_nbrs  = compute_neighbour_texts(train_recs)
+        train_labels = [get_label(r) for r in train_recs]
+
+        X_tr = hstack([
+            tfidf.fit_transform(train_texts),
+            csr_matrix(_records_to_numerical(train_recs, train_pos, train_nbrs)),
+        ])
+        clf.fit(X_tr, train_labels)
+
+        # Предсказание на fold-val
+        val_texts = _records_to_texts(val_recs)
+        val_pos   = compute_dialogue_positions(val_recs)
+        val_nbrs  = compute_neighbour_texts(val_recs)
+
+        X_val = hstack([
+            tfidf.transform(val_texts),
+            csr_matrix(_records_to_numerical(val_recs, val_pos, val_nbrs)),
+        ])
+        proba = clf.predict_proba(X_val)
+        pred_indices = np.argmax(proba, axis=1)
+        classes = list(clf.classes_)
+        preds = [classes[i] for i in pred_indices]
+
+        all_preds.extend(preds)
+        all_true.extend([get_label(r) for r in val_recs])
+
+    report = classification_report(
+        all_true, all_preds,
+        labels=["contact_open", "contact_close", "none"],
+        output_dict=True,
+        zero_division=0,
+    )
+    return report
+
+
+# ---------------------------------------------------------------------------
+# Подбор порога (threshold sweep)
+# ---------------------------------------------------------------------------
+
+def _find_best_threshold(
+    records: list[dict],
+    model: IntentClassifier,
+    target_class: str = "contact_open",
+    beta: float = 1.0,
+) -> float:
+    """
+    Ищет порог уверенности, максимизирующий F-beta для target_class на обучающих данных.
+    Используется отдельно для contact_open и contact_close и берётся минимум.
+    """
+    labels = np.array([get_label(r) for r in records])
+    _, proba = model.predict_proba(records)
+    class_idx = model.classes_.index(target_class)
+    scores = proba[:, class_idx]
+    binary_labels = (labels == target_class).astype(int)
+
+    precision, recall, thresholds = precision_recall_curve(binary_labels, scores)
+    # F-beta: beta=1 → F1, beta<1 → precision-weighted
+    beta2 = beta ** 2
+    with np.errstate(divide="ignore", invalid="ignore"):
+        f_beta = np.where(
+            precision + recall > 0,
+            (1 + beta2) * precision * recall / (beta2 * precision + recall),
+            0.0,
+        )
+    best_idx = np.argmax(f_beta[:-1])  # thresholds has len = len(precision)-1
+    return float(thresholds[best_idx])
+
+
+# ---------------------------------------------------------------------------
+# Validation pipeline (переиспользуем из предыдущей версии)
+# ---------------------------------------------------------------------------
 
 def _parse_pairs(df: pd.DataFrame, column: str, category: str) -> set[tuple[str, str, str]]:
     pairs: set[tuple[str, str, str]] = set()
@@ -72,9 +187,7 @@ def _greedy_eval(
     return matched, exact, float(np.mean(sims)) if sims else 0.0
 
 
-def _evaluate(
-    gold_df: pd.DataFrame, pred_df: pd.DataFrame
-) -> dict[str, dict]:
+def _evaluate(gold_df: pd.DataFrame, pred_df: pd.DataFrame) -> dict[str, dict]:
     go = _parse_pairs(gold_df, "opening", "opening")
     gc = _parse_pairs(gold_df, "closing", "closing")
     po = _parse_pairs(pred_df, "opening", "opening")
@@ -88,30 +201,24 @@ def _evaluate(
         f1 = 2 * pr * r / (pr + r) if pr + r else 0.0
         matched, exact, avg_sim = _greedy_eval(g, p)
         results[name] = {
-            "gold": len(g),
-            "pred": len(p),
-            "jaccard": round(j, 4),
-            "precision": round(pr, 4),
-            "recall": round(r, 4),
-            "f1": round(f1, 4),
-            "matched": matched,
-            "exact": exact,
-            "avg_sim": round(avg_sim, 4),
+            "gold": len(g), "pred": len(p),
+            "jaccard": round(j, 4), "precision": round(pr, 4),
+            "recall": round(r, 4), "f1": round(f1, 4),
+            "matched": matched, "exact": exact, "avg_sim": round(avg_sim, 4),
         }
     return results
 
 
 def _run_pipeline(
-    classifier_type: str,
     model_path: Path,
+    threshold: float,
     gold_excel: Path,
     transcript_dir: Path,
     samples_dir: Path,
     output_dir: Path,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Запускает pipeline и возвращает (pred_df, gold_df)."""
     pairs_path = output_dir / "extracted_pairs.xlsx"
-    gold_path = output_dir / "gold.xlsx"
+    gold_path  = output_dir / "gold.xlsx"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     cmd = [
@@ -126,7 +233,7 @@ def _run_pipeline(
         "--diarization-segment-mode", "regular",
         "--intent-mode", "combined",
         "--ml-model", str(model_path),
-        "--ml-confidence-threshold", "0.35",
+        "--ml-confidence-threshold", str(round(threshold, 4)),
         "--similarity-threshold", "0.48",
         "--skip-asr", "--skip-diarization",
         "--fit-input", "data/processed/gold_dialogues.jsonl",
@@ -134,12 +241,14 @@ def _run_pipeline(
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         print(f"  [WARN] pipeline exited {result.returncode}")
-        print(result.stderr[-500:] if result.stderr else "")
+        print(result.stderr[-300:] if result.stderr else "")
 
-    pred_df = pd.read_excel(pairs_path)
-    gold_df = pd.read_excel(gold_path)
-    return pred_df, gold_df
+    return pd.read_excel(pairs_path), pd.read_excel(gold_path)
 
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Сравнение ML-классификаторов")
@@ -149,12 +258,18 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--samples-dir", required=True)
     parser.add_argument(
         "--output", default="artifacts/classifier_comparison.json",
-        help="Путь для сохранения сводной таблицы JSON",
     )
     parser.add_argument(
         "--classifiers", nargs="+", default=CLASSIFIER_CHOICES,
         choices=CLASSIFIER_CHOICES,
-        help="Какие классификаторы сравнивать (по умолчанию все)",
+    )
+    parser.add_argument(
+        "--cv-folds", type=int, default=5,
+        help="Число fold для кросс-валидации",
+    )
+    parser.add_argument(
+        "--fixed-threshold", type=float, default=None,
+        help="Если указан — использовать фиксированный порог вместо sweep",
     )
     args = parser.parse_args(argv)
 
@@ -167,39 +282,49 @@ def main(argv: list[str] | None = None) -> None:
         tmp = Path(tmpdir)
 
         for clf_type in args.classifiers:
-            print(f"=== {clf_type.upper()} ===")
+            print(f"{'=' * 60}")
+            print(f"  Классификатор: {clf_type.upper()}")
+            print(f"{'=' * 60}")
 
-            # Обучение
-            print(f"  Обучение...")
-            model = IntentClassifier(classifier_type=clf_type)
-            model.fit(records)
-            model_path = tmp / f"model_{clf_type}.joblib"
-            save_model(model, model_path)
-
-            # Статистика обучения
-            from .ml_intent import compute_train_stats
-            stats = compute_train_stats(records, model)
-            train_report = stats.get("train_classification_report", {})
+            # --- Кросс-валидация ---
+            print(f"  Кросс-валидация ({args.cv_folds}-fold)...")
+            cv_rep = _cv_report(records, clf_type, n_splits=args.cv_folds)
             for cls in ["contact_open", "contact_close", "none"]:
-                row = train_report.get(cls, {})
+                row = cv_rep.get(cls, {})
                 print(
                     f"    {cls:20s}  P={row.get('precision', 0):.3f}"
                     f"  R={row.get('recall', 0):.3f}"
                     f"  F1={row.get('f1-score', 0):.3f}"
                 )
 
-            # Validation
-            print(f"  Validation pipeline...")
+            # --- Обучение на полных данных ---
+            print(f"  Обучение на полных данных...")
+            model = IntentClassifier(classifier_type=clf_type)
+            model.fit(records)
+            model_path = tmp / f"model_{clf_type}.joblib"
+            save_model(model, model_path)
+
+            # --- Подбор порога ---
+            if args.fixed_threshold is not None:
+                threshold = args.fixed_threshold
+                print(f"  Порог (фиксированный): {threshold:.4f}")
+            else:
+                t_open  = _find_best_threshold(records, model, "contact_open",  beta=1.0)
+                t_close = _find_best_threshold(records, model, "contact_close", beta=1.0)
+                threshold = min(t_open, t_close)
+                print(f"  Порог (sweep): open={t_open:.4f}  close={t_close:.4f}  used={threshold:.4f}")
+
+            # --- Validation pipeline ---
+            print(f"  Validation pipeline (threshold={threshold:.4f})...")
             out_dir = tmp / f"val_{clf_type}"
             pred_df, gold_df = _run_pipeline(
-                classifier_type=clf_type,
                 model_path=model_path,
+                threshold=threshold,
                 gold_excel=Path(args.gold_excel),
                 transcript_dir=Path(args.transcript_dir),
                 samples_dir=Path(args.samples_dir),
                 output_dir=out_dir,
             )
-
             metrics = _evaluate(gold_df, pred_df)
             m = metrics["all"]
             print(
@@ -211,25 +336,33 @@ def main(argv: list[str] | None = None) -> None:
 
             comparison.append({
                 "classifier": clf_type,
-                "train_report": train_report,
+                "threshold_used": round(threshold, 4),
+                "cv_report": cv_rep,
                 "validation_metrics": metrics,
             })
 
-    # Сводная таблица в консоль
-    print("\n" + "=" * 90)
-    print(f"{'Classifier':<8} {'Pred':>5} {'Jaccard':>8} {'P':>7} {'R':>7} {'F1':>7} "
-          f"{'matched':>8} {'exact':>6} {'avg_sim':>8}")
-    print("-" * 90)
+    # --- Сводная таблица ---
+    print("\n" + "=" * 100)
+    print(f"{'Clf':<6} {'Thr':>5}  "
+          f"CV open F1  CV close F1  "
+          f"{'Pred':>5} {'J':>7} {'P':>7} {'R':>7} {'F1':>7} {'matched':>7} {'exact':>5} {'avg_sim':>8}")
+    print("-" * 100)
     for entry in comparison:
         clf = entry["classifier"]
-        m = entry["validation_metrics"]["all"]
+        thr = entry["threshold_used"]
+        cv  = entry["cv_report"]
+        m   = entry["validation_metrics"]["all"]
+        cv_open  = cv.get("contact_open",  {}).get("f1-score", 0)
+        cv_close = cv.get("contact_close", {}).get("f1-score", 0)
         print(
-            f"{clf:<8} {m['pred']:>5} {m['jaccard']:>8.4f} {m['precision']:>7.4f} "
-            f"{m['recall']:>7.4f} {m['f1']:>7.4f} {m['matched']:>8} "
-            f"{m['exact']:>6} {m['avg_sim']:>8.4f}"
+            f"{clf:<6} {thr:>5.3f}  "
+            f"{cv_open:>10.3f}  {cv_close:>11.3f}  "
+            f"{m['pred']:>5} {m['jaccard']:>7.4f} {m['precision']:>7.4f} "
+            f"{m['recall']:>7.4f} {m['f1']:>7.4f} {m['matched']:>7} "
+            f"{m['exact']:>5} {m['avg_sim']:>8.4f}"
         )
 
-    # Сохранение
+    # --- Сохранение ---
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as f:
