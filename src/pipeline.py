@@ -205,7 +205,38 @@ def _run_intent_extraction(
         if key not in seen:
             seen.add(key)
             merged.append(pred)
-    return merged
+
+    # Устранение двойных меток: если одна реплика получила и opening, и closing,
+    # rule-based предсказание удаляется только если ML классифицирует эту реплику
+    # в противоположный тип (ML более контекстуально обоснован при конфликте).
+    uid_types: dict[str, set[str]] = {}
+    for pred in merged:
+        uid = str(pred.get("utterance_id", ""))
+        uid_types.setdefault(uid, set()).add(str(pred.get("intent_type", "")))
+
+    ml_uid_types: dict[str, str] = {
+        str(p.get("utterance_id", "")): str(p.get("intent_type", ""))
+        for p in ml_preds
+    }
+
+    rbi_uid_types: set[tuple[str, str]] = {
+        (str(p.get("utterance_id", "")), str(p.get("intent_type", "")))
+        for p in rbi_preds
+    }
+
+    filtered: list[dict[str, Any]] = []
+    for pred in merged:
+        uid = str(pred.get("utterance_id", ""))
+        pred_type = str(pred.get("intent_type", ""))
+        if uid_types.get(uid, set()) == {"contact_open", "contact_close"}:
+            ml_type = ml_uid_types.get(uid)
+            # Если это rule-based предсказание и ML указывает противоположный тип —
+            # отбрасываем rule-based в пользу ML
+            is_rbi = (uid, pred_type) in rbi_uid_types
+            if is_rbi and ml_type and ml_type != pred_type:
+                continue
+        filtered.append(pred)
+    return filtered
 
 
 def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
