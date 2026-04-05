@@ -118,9 +118,49 @@ def compute_dialogue_positions(records: list[dict[str, Any]]) -> dict[str, float
     return positions
 
 
+def compute_neighbour_texts(records: list[dict[str, Any]]) -> dict[str, tuple[str, str]]:
+    """
+    Returns {utterance_id: (prev_text, next_text)} within the same dialogue.
+    Boundary utterances get empty strings for the missing neighbour.
+    """
+    by_dialogue: dict[str, list[dict[str, Any]]] = {}
+    for rec in records:
+        did = str(rec.get("dialogue_id", ""))
+        by_dialogue.setdefault(did, []).append(rec)
+
+    neighbours: dict[str, tuple[str, str]] = {}
+    for group in by_dialogue.values():
+        texts = [str(r.get("text") or "") for r in group]
+        for i, rec in enumerate(group):
+            uid = str(rec.get("utterance_id", ""))
+            prev_text = texts[i - 1] if i > 0 else ""
+            next_text = texts[i + 1] if i < len(texts) - 1 else ""
+            neighbours[uid] = (prev_text, next_text)
+    return neighbours
+
+
 # ---------------------------------------------------------------------------
 # Построение признаков
 # ---------------------------------------------------------------------------
+
+# Лексика приветствий и прощаний для быстрой проверки контекста соседних реплик
+_OPEN_TOKENS = frozenset([
+    "привет", "здравствуй", "здравствуйте", "добрый", "алло", "хай",
+    "hello", "hi", "hey", "приветствую", "добрейший",
+])
+_CLOSE_TOKENS = frozenset([
+    "пока", "до", "свидания", "прощай", "прощайте", "всего", "удачи",
+    "чао", "bye", "goodbye", "бывай", "бывайте",
+])
+
+
+def _context_score(text: str) -> tuple[float, float]:
+    """Возвращает (open_score, close_score) для текста соседней реплики."""
+    tokens = set(text.lower().split())
+    open_score = float(bool(tokens & _OPEN_TOKENS))
+    close_score = float(bool(tokens & _CLOSE_TOKENS))
+    return open_score, close_score
+
 
 def _records_to_texts(records: list[dict[str, Any]]) -> list[str]:
     return [str(rec.get("text") or "") for rec in records]
@@ -129,6 +169,7 @@ def _records_to_texts(records: list[dict[str, Any]]) -> list[str]:
 def _records_to_numerical(
     records: list[dict[str, Any]],
     positions: dict[str, float],
+    neighbours: dict[str, tuple[str, str]] | None = None,
 ) -> np.ndarray:
     rows = []
     for rec in records:
@@ -136,11 +177,25 @@ def _records_to_numerical(
         text = str(rec.get("text") or "")
         rel = positions.get(uid, 0.5)
         token_count = len(text.split())
+
+        # Признаки контекста: наличие маркеров открытия/закрытия у соседних реплик
+        prev_text, next_text = neighbours.get(uid, ("", "")) if neighbours else ("", "")
+        prev_open, prev_close = _context_score(prev_text)
+        next_open, next_close = _context_score(next_text)
+        prev_is_empty = float(not prev_text)
+        next_is_empty = float(not next_text)
+
         rows.append([
             rel,
             token_count,
             float(rel <= 0.30),
             float(rel >= 0.70),
+            prev_open,
+            prev_close,
+            next_open,
+            next_close,
+            prev_is_empty,   # первая реплика в диалоге — сильный признак открытия
+            next_is_empty,   # последняя реплика в диалоге — сильный признак закрытия
         ])
     return np.array(rows, dtype=np.float32)
 
@@ -209,9 +264,10 @@ class IntentClassifier:
     def fit(self, records: list[dict[str, Any]]) -> "IntentClassifier":
         labels = [get_label(r) for r in records]
         positions = compute_dialogue_positions(records)
+        neighbours = compute_neighbour_texts(records)
         texts = _records_to_texts(records)
         X_tfidf = self.tfidf.fit_transform(texts)
-        X_num = _records_to_numerical(records, positions)
+        X_num = _records_to_numerical(records, positions, neighbours)
         X = hstack([X_tfidf, csr_matrix(X_num)])
         self.clf.fit(X, labels)
         self.classes_ = list(self.clf.classes_)
@@ -221,12 +277,15 @@ class IntentClassifier:
         self,
         records: list[dict[str, Any]],
         positions: dict[str, float] | None = None,
+        neighbours: dict[str, tuple[str, str]] | None = None,
     ) -> tuple[list[str], np.ndarray]:
         if positions is None:
             positions = compute_dialogue_positions(records)
+        if neighbours is None:
+            neighbours = compute_neighbour_texts(records)
         texts = _records_to_texts(records)
         X_tfidf = self.tfidf.transform(texts)
-        X_num = _records_to_numerical(records, positions)
+        X_num = _records_to_numerical(records, positions, neighbours)
         X = hstack([X_tfidf, csr_matrix(X_num)])
         proba = self.clf.predict_proba(X)
         pred_indices = np.argmax(proba, axis=1)
@@ -257,8 +316,9 @@ def predict_for_records(
 
     if positions is None:
         positions = compute_dialogue_positions(records)
+    neighbours = compute_neighbour_texts(records)
 
-    pred_labels, proba = model.predict_proba(records, positions)
+    pred_labels, proba = model.predict_proba(records, positions, neighbours)
 
     predictions: list[dict[str, Any]] = []
     for rec, label, prob_row in zip(records, pred_labels, proba):
@@ -319,7 +379,8 @@ def compute_train_stats(
     label_counts = dict(Counter(labels))
 
     positions = compute_dialogue_positions(records)
-    pred_labels, _ = model.predict_proba(records, positions)
+    neighbours = compute_neighbour_texts(records)
+    pred_labels, _ = model.predict_proba(records, positions, neighbours)
 
     report = classification_report(
         labels,
