@@ -228,20 +228,32 @@ python -m src.pipeline \
 
 ### Шаг 10. ML-классификатор намерений
 
-**Статус:** реализован, обучен, интегрирован в pipeline (combined mode, v11).
+**Статус:** реализован, обучен, интегрирован в pipeline (combined mode).
 
 **Файлы этапа:**
-- `src/ml_intent.py` — TF-IDF (char n-gram 2-5) + LogisticRegression(class_weight='balanced')
-- `src/train_intent_model.py` — CLI для обучения модели
+- `src/ml_intent.py` — TF-IDF (char n-gram 2-5) + sklearn-классификатор; признаки: текст реплики, относительная позиция в диалоге, маркеры контакта в соседних репликах (контекстные признаки)
+- `src/train_intent_model.py` — CLI для обучения; поддерживает `--classifier lr|svm|nb|sgd|ridge`
+- `src/compare_classifiers.py` — сравнение всех классификаторов на validation-выборке
 - `src/predict_intent_model.py` — CLI для инференса на JSONL-репликах
 - `src/evaluate.py` — оценка предсказаний против gold на уровне реплик
 
-**Обучение:**
+**Обучение (Ridge — лучший по F1 на validation):**
 ```bash
 python -m src.train_intent_model \
   --fit-input data/processed/gold_dialogues.jsonl \
   --model-output data/models/intent_classifier.joblib \
-  --stats-output data/models/train_stats.json
+  --stats-output data/models/train_stats.json \
+  --classifier ridge
+```
+
+**Сравнение классификаторов:**
+```bash
+python -m src.compare_classifiers \
+  --fit-input data/processed/gold_dialogues.jsonl \
+  --gold-excel data/raw/gold/data_val.xlsx \
+  --transcript-dir artifacts/validation_status_svoboden_asr_diarization_colab/windows \
+  --samples-dir data/raw/validation/audio_profiles \
+  --output artifacts/classifier_comparison.json
 ```
 
 **Инференс на репликах:**
@@ -418,5 +430,6 @@ MyDrive/
     ├── diarization.py                    # pyannote diarization
     ├── chunk_film.py                     # разбивка фильма на чанки для тестового пайплайна
     ├── extract_audio_profile.py          # извлечение голосовых профилей из видео (ffmpeg)
-    └── export_detailed_pairs.py          # экспорт плоской таблицы событий в Excel
+    ├── export_detailed_pairs.py          # экспорт плоской таблицы событий в Excel
+    └── compare_classifiers.py            # сравнение ML-классификаторов на validation-выборке
 ```
