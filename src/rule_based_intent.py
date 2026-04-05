@@ -63,6 +63,7 @@ OPEN_MANUAL_RULES = {
     "allo_generic",
     "privetstvuyu",
     "dobro_pozhalovat",
+    "lets_get_acquainted",
 }
 
 CLOSE_MANUAL_RULES = {
