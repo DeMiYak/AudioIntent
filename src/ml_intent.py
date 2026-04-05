@@ -149,29 +149,61 @@ def _records_to_numerical(
 # Контейнер модели
 # ---------------------------------------------------------------------------
 
+CLASSIFIER_CHOICES = ["lr", "svm", "nb", "sgd", "ridge"]
+
+
+def _build_classifier(classifier_type: str):
+    """Создаёт sklearn-классификатор по строковому ключу."""
+    from sklearn.naive_bayes import ComplementNB
+    from sklearn.linear_model import SGDClassifier, RidgeClassifier
+    from sklearn.svm import LinearSVC
+    from sklearn.calibration import CalibratedClassifierCV
+
+    if classifier_type == "lr":
+        return LogisticRegression(
+            C=1.0, max_iter=1000, class_weight="balanced", solver="lbfgs",
+        )
+    if classifier_type == "svm":
+        # LinearSVC не поддерживает predict_proba — оборачиваем в CalibratedClassifierCV
+        return CalibratedClassifierCV(
+            LinearSVC(C=1.0, max_iter=5000, class_weight="balanced"), cv=3,
+        )
+    if classifier_type == "nb":
+        # ComplementNB лучше работает с несбалансированными классами чем MultinomialNB
+        return ComplementNB(alpha=0.1)
+    if classifier_type == "sgd":
+        return SGDClassifier(
+            loss="modified_huber", max_iter=1000, class_weight="balanced",
+            random_state=42,
+        )
+    if classifier_type == "ridge":
+        # RidgeClassifier не поддерживает predict_proba — оборачиваем
+        return CalibratedClassifierCV(RidgeClassifier(class_weight="balanced"), cv=3)
+    raise ValueError(f"Неизвестный тип классификатора: {classifier_type!r}. "
+                     f"Допустимые: {CLASSIFIER_CHOICES}")
+
+
 class IntentClassifier:
     """
-    TF-IDF char n-gram + LogisticRegression classifier.
+    TF-IDF char n-gram + sklearn-классификатор.
 
-    Stores:
-      - tfidf: fitted TfidfVectorizer
-      - clf: fitted LogisticRegression
-      - label_encoder: maps int index -> label string
+    Поддерживаемые типы (параметр classifier_type):
+      'lr'    — LogisticRegression (по умолчанию)
+      'svm'   — LinearSVC + CalibratedClassifierCV
+      'nb'    — ComplementNB
+      'sgd'   — SGDClassifier (modified_huber loss)
+      'ridge' — RidgeClassifier + CalibratedClassifierCV
     """
 
-    def __init__(self) -> None:
+    def __init__(self, classifier_type: str = "lr") -> None:
+        self.classifier_type = classifier_type
         self.tfidf = TfidfVectorizer(
             analyzer="char_wb",
             ngram_range=(2, 5),
             max_features=50_000,
             sublinear_tf=True,
         )
-        self.clf = LogisticRegression(
-            C=1.0,
-            max_iter=1000,
-            class_weight="balanced",
-            solver="lbfgs",
-        )
+        self.clf = _build_classifier(classifier_type)
         self.classes_: list[str] = []
 
     def fit(self, records: list[dict[str, Any]]) -> "IntentClassifier":
