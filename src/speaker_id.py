@@ -10,7 +10,83 @@ from typing import Any
 
 import numpy as np
 import soundfile as sf
-from resemblyzer import VoiceEncoder, preprocess_wav
+import torch
+
+
+# ---------------------------------------------------------------------------
+# Единый интерфейс encoder'а: ECAPA-TDNN (SpeechBrain) или Resemblyzer fallback
+# ---------------------------------------------------------------------------
+
+class VoiceEncoder:
+    """
+    Обёртка над speaker encoder'ом.
+
+    Приоритет: ECAPA-TDNN (SpeechBrain, 192-мерные эмбеддинги).
+    Fallback: Resemblyzer (256-мерные эмбеддинги), если SpeechBrain недоступен.
+
+    Интерфейс: embed_utterance(wav, sr) -> np.ndarray
+    """
+
+    def __init__(self, device: str = "cpu", ecapa_savedir: str = "data/models/speechbrain_ecapa") -> None:
+        self._backend: str
+        self._encoder: object
+
+        try:
+            from speechbrain.inference.speaker import EncoderClassifier
+            from speechbrain.utils.fetching import LocalStrategy
+            self._encoder = EncoderClassifier.from_hparams(
+                source="speechbrain/spkrec-ecapa-voxceleb",
+                savedir=ecapa_savedir,
+                run_opts={"device": device},
+                local_strategy=LocalStrategy.COPY,
+            )
+            self._backend = "ecapa"
+            print(f"Loaded ECAPA-TDNN speaker encoder (SpeechBrain) on {device}")
+        except Exception as e:
+            try:
+                from resemblyzer import VoiceEncoder as _Resemblyzer
+                self._encoder = _Resemblyzer()
+                self._backend = "resemblyzer"
+                print(f"Loaded Resemblyzer speaker encoder (ECAPA unavailable: {e})")
+            except Exception as e2:
+                raise RuntimeError(
+                    f"Не удалось загрузить ни один speaker encoder.\n"
+                    f"  ECAPA: {e}\n  Resemblyzer: {e2}"
+                )
+
+    def embed_utterance(self, wav: np.ndarray, sr: int = 16000) -> np.ndarray:
+        """Возвращает L2-нормированный 1D embedding реплики."""
+        if self._backend == "ecapa":
+            wav_f32 = wav.astype(np.float32)
+            signal = torch.from_numpy(wav_f32).unsqueeze(0)  # [1, T]
+            with torch.no_grad():
+                emb = self._encoder.encode_batch(signal)      # [1, 1, D]
+            vec = emb.squeeze().numpy().astype(np.float32)    # [D]
+            if vec.ndim == 0:                                  # единственный элемент
+                vec = vec.reshape(1)
+        else:
+            from resemblyzer import preprocess_wav
+            wav_pp = preprocess_wav(wav, source_sr=sr)
+            vec = self._encoder.embed_utterance(wav_pp).astype(np.float32)
+        vec = vec.flatten()
+        norm = np.linalg.norm(vec)
+        return vec / norm if norm > 0 else vec
+
+    @property
+    def backend(self) -> str:
+        return self._backend
+
+
+def preprocess_wav(wav: np.ndarray, source_sr: int) -> np.ndarray:
+    """
+    Совместимость с кодом, написанным под Resemblyzer.
+    При ECAPA-backend возвращает wav без изменений (encode сделает всё сам).
+    """
+    try:
+        from resemblyzer import preprocess_wav as _pp
+        return _pp(wav, source_sr=source_sr)
+    except ImportError:
+        return wav.astype(np.float32)
 
 
 SUPPORTED_AUDIO_EXTENSIONS = {
@@ -217,18 +293,19 @@ def build_character_embeddings(
                 skipped_sample_count += 1
                 continue
 
-            wav_pp = preprocess_wav(wav, source_sr=sr)
-            if len(wav_pp) == 0:
+            if len(wav) == 0:
                 skipped_sample_count += 1
                 continue
 
-            embedding = encoder.embed_utterance(wav_pp)
+            embedding = encoder.embed_utterance(wav, sr)
             sample_embeddings.append(embedding)
             valid_sample_count += 1
             total_duration_sec += duration_sec
 
         if sample_embeddings:
-            character_embeddings[character_name] = np.mean(sample_embeddings, axis=0)
+            character_embeddings[character_name] = np.mean(
+                np.stack([e.flatten() for e in sample_embeddings]), axis=0
+            )
 
         character_profiles.append(
             {
@@ -351,10 +428,9 @@ def build_speaker_embeddings(
 
         if collected_pieces:
             concatenated = np.concatenate(collected_pieces)
-            wav_pp = preprocess_wav(concatenated, source_sr=sr)
 
-            if len(wav_pp) > 0 and total_duration_sec >= min_total_duration_sec:
-                embedding = encoder.embed_utterance(wav_pp)
+            if len(concatenated) > 0 and total_duration_sec >= min_total_duration_sec:
+                embedding = encoder.embed_utterance(concatenated, sr)
                 speaker_embeddings[speaker_label] = embedding
                 embedding_built = True
             else:
@@ -379,30 +455,35 @@ def assign_speakers_to_characters(
     speaker_embeddings: dict[str, np.ndarray],
     character_embeddings: dict[str, np.ndarray],
     similarity_threshold: float = 0.65,
+    similarity_margin_threshold: float = 0.05,
     top_k: int = 3,
 ) -> list[dict[str, Any]]:
     """
     Для каждого speaker_label ищет наиболее похожего персонажа.
 
-    Использует жадное взаимоисключающее сопоставление (one-to-one):
-    на каждом шаге берётся глобально лучшая пара (speaker, character),
-    после чего оба исключаются из дальнейшего рассмотрения.
-    Это предотвращает ситуацию, когда два разных спикера получают
-    одного и того же персонажа.
+    Использует жадное взаимоисключающее сопоставление (one-to-one).
+    Принимает сопоставление только если:
+      top1_similarity >= similarity_threshold
+      И top1 - top2 >= similarity_margin_threshold (различимость идентификации).
+    Спикеры с недостаточным margin помечаются как unknown, не форсируются.
     """
     if not speaker_embeddings or not character_embeddings:
         return [
             {
                 "speaker_label": sl,
                 "speaker_name": "unknown",
+                "assignment_reason": "no_character_embeddings",
                 "status": "no_character_embeddings",
+                "top1_similarity": None,
+                "top2_similarity": None,
+                "similarity_margin": None,
                 "best_similarity": None,
                 "top_candidates": [],
             }
             for sl in sorted(speaker_embeddings)
         ]
 
-    # Построить полную матрицу схожести и топ-k для каждого спикера для отчётности
+    # Построить полную матрицу схожести и топ-k для каждого спикера
     speaker_labels = sorted(speaker_embeddings)
     all_scores: dict[str, list[dict[str, Any]]] = {}
     pairs: list[tuple[float, str, str]] = []  # (схожесть, speaker_label, имя персонажа)
@@ -417,7 +498,21 @@ def assign_speakers_to_characters(
         scored.sort(key=lambda x: (-x["similarity"], x["character_name"]))
         all_scores[speaker_label] = scored
 
-    # Жадное взаимоисключающее сопоставление: многократно выбираем глобально лучшую доступную пару
+    # Вычислить top1/top2/margin для каждого спикера и пометить неоднозначных
+    speaker_top1: dict[str, float] = {}
+    speaker_top2: dict[str, float] = {}
+    ineligible_speakers: set[str] = set()  # margin слишком мал для уверенного сопоставления
+
+    for speaker_label in speaker_labels:
+        scored = all_scores[speaker_label]
+        t1 = scored[0]["similarity"] if scored else 0.0
+        t2 = scored[1]["similarity"] if len(scored) >= 2 else 0.0
+        speaker_top1[speaker_label] = t1
+        speaker_top2[speaker_label] = t2
+        if (t1 - t2) < similarity_margin_threshold:
+            ineligible_speakers.add(speaker_label)
+
+    # Жадное взаимоисключающее сопоставление
     pairs.sort(key=lambda x: -x[0])
     assigned_speakers: set[str] = set()
     assigned_characters: set[str] = set()
@@ -426,39 +521,46 @@ def assign_speakers_to_characters(
     for sim, speaker_label, character_name in pairs:
         if speaker_label in assigned_speakers or character_name in assigned_characters:
             continue
+        if speaker_label in ineligible_speakers:
+            assigned_speakers.add(speaker_label)  # исключить из дальнейшего рассмотрения
+            continue
         if sim < similarity_threshold:
             break  # пары отсортированы по убыванию; ничего лучшего нет
         final_assignment[speaker_label] = (character_name, sim)
         assigned_speakers.add(speaker_label)
         assigned_characters.add(character_name)
 
-    # Сформировать вывод в том же формате, что и прежде
+    # Сформировать вывод
     assignments: list[dict[str, Any]] = []
     for speaker_label in speaker_labels:
         scored_candidates = all_scores[speaker_label]
-        best_scored = scored_candidates[0] if scored_candidates else None
+        t1 = speaker_top1.get(speaker_label)
+        t2 = speaker_top2.get(speaker_label)
+        margin = round(t1 - t2, 4) if (t1 is not None and t2 is not None) else None
 
         if speaker_label in final_assignment:
-            character_name, sim = final_assignment[speaker_label]
-            assignments.append(
-                {
-                    "speaker_label": speaker_label,
-                    "speaker_name": character_name,
-                    "status": "matched",
-                    "best_similarity": best_scored["similarity"] if best_scored else None,
-                    "top_candidates": scored_candidates[:top_k],
-                }
-            )
+            character_name, _ = final_assignment[speaker_label]
+            reason = "matched"
+        elif speaker_label in ineligible_speakers:
+            character_name = "unknown"
+            reason = "below_margin"
         else:
-            assignments.append(
-                {
-                    "speaker_label": speaker_label,
-                    "speaker_name": "unknown",
-                    "status": "below_threshold",
-                    "best_similarity": best_scored["similarity"] if best_scored else None,
-                    "top_candidates": scored_candidates[:top_k],
-                }
-            )
+            character_name = "unknown"
+            reason = "below_threshold"
+
+        assignments.append(
+            {
+                "speaker_label": speaker_label,
+                "speaker_name": character_name,
+                "assignment_reason": reason,
+                "status": "matched" if reason == "matched" else "unmatched",
+                "top1_similarity": round(t1, 4) if t1 is not None else None,
+                "top2_similarity": round(t2, 4) if t2 is not None else None,
+                "similarity_margin": margin,
+                "best_similarity": round(t1, 4) if t1 is not None else None,
+                "top_candidates": scored_candidates[:top_k],
+            }
+        )
 
     return assignments
 
@@ -481,15 +583,13 @@ def apply_assignments_to_utterances(
         utt_copy = dict(utt)
 
         if assignment is None:
-            if speaker_label == unknown_speaker_label:
-                utt_copy["speaker_name"] = "unknown"
-                utt_copy["speaker_similarity"] = None
-            else:
-                utt_copy["speaker_name"] = "unknown"
-                utt_copy["speaker_similarity"] = None
+            utt_copy["speaker_name"] = "unknown"
+            utt_copy["speaker_similarity"] = None
+            utt_copy["speaker_similarity_margin"] = None
         else:
             utt_copy["speaker_name"] = assignment["speaker_name"]
             utt_copy["speaker_similarity"] = assignment["best_similarity"]
+            utt_copy["speaker_similarity_margin"] = assignment.get("similarity_margin")
 
         updated.append(utt_copy)
 
@@ -583,6 +683,15 @@ def parse_args() -> argparse.Namespace:
         help="Порог cosine similarity для принятия решения о сопоставлении.",
     )
     parser.add_argument(
+        "--similarity-margin-threshold",
+        type=float,
+        default=0.05,
+        help=(
+            "Минимальная разница top1-top2 cosine similarity для уверенного сопоставления. "
+            "Спикеры с margin ниже порога помечаются unknown."
+        ),
+    )
+    parser.add_argument(
         "--min-sample-duration-sec",
         type=float,
         default=0.5,
@@ -655,6 +764,7 @@ def main() -> None:
         speaker_embeddings=speaker_embeddings,
         character_embeddings=character_embeddings,
         similarity_threshold=args.similarity_threshold,
+        similarity_margin_threshold=args.similarity_margin_threshold,
         top_k=3,
     )
 
@@ -666,6 +776,7 @@ def main() -> None:
 
     mapping_payload = {
         "similarity_threshold": args.similarity_threshold,
+        "similarity_margin_threshold": args.similarity_margin_threshold,
         "character_profiles": character_profiles,
         "speaker_profiles": speaker_profiles,
         "assignments": assignments,
