@@ -147,6 +147,23 @@ def _find_best_threshold(
 # Validation pipeline (переиспользуем из предыдущей версии)
 # ---------------------------------------------------------------------------
 
+def _parse_pairs_phrase_only(df: pd.DataFrame, column: str, category: str) -> set[tuple[str, str]]:
+    """Как _parse_pairs, но без speaker — только (phrase, category)."""
+    pairs: set[tuple[str, str]] = set()
+    for val in df[column]:
+        if pd.isna(val):
+            continue
+        val = str(val).strip()
+        if val in ("", "0"):
+            continue
+        for piece in val.split(";"):
+            piece = piece.strip().lower()
+            if " - " in piece:
+                _, phrase = piece.split(" - ", 1)
+                pairs.add((phrase.strip(), category))
+    return pairs
+
+
 def _parse_pairs(df: pd.DataFrame, column: str, category: str) -> set[tuple[str, str, str]]:
     pairs: set[tuple[str, str, str]] = set()
     for val in df[column]:
@@ -185,6 +202,55 @@ def _greedy_eval(
                 exact += 1
             sims.append(best_s)
     return matched, exact, float(np.mean(sims)) if sims else 0.0
+
+
+def _compute_diagnostics(gold_df: pd.DataFrame, pred_df: pd.DataFrame) -> dict:
+    """
+    Дополнительные диагностики поверх базовой оценки:
+    - phrase_only: метрики без учёта speaker (выявляет, сколько ошибок — speaker attribution)
+    - speaker_mismatch_count: кол-во пар, где фраза почти совпадает, но speaker разный
+    """
+    diag: dict = {}
+
+    # Phrase-only evaluation
+    phrase_results: dict[str, dict] = {}
+    for name, col, cat in [("opening", "opening", "opening"), ("closing", "closing", "closing")]:
+        go = _parse_pairs_phrase_only(gold_df, col, cat)
+        po = _parse_pairs_phrase_only(pred_df, col, cat)
+        j = len(go & po) / len(go | po) if (go | po) else 1.0
+        pr = len(go & po) / len(po) if po else 0.0
+        r = len(go & po) / len(go) if go else 0.0
+        f1 = 2 * pr * r / (pr + r) if pr + r else 0.0
+        phrase_results[name] = {
+            "gold": len(go), "pred": len(po),
+            "jaccard": round(j, 4), "precision": round(pr, 4),
+            "recall": round(r, 4), "f1": round(f1, 4),
+        }
+    go_all = _parse_pairs_phrase_only(gold_df, "opening", "opening") | _parse_pairs_phrase_only(gold_df, "closing", "closing")
+    po_all = _parse_pairs_phrase_only(pred_df, "opening", "opening") | _parse_pairs_phrase_only(pred_df, "closing", "closing")
+    j = len(go_all & po_all) / len(go_all | po_all) if (go_all | po_all) else 1.0
+    pr = len(go_all & po_all) / len(po_all) if po_all else 0.0
+    r = len(go_all & po_all) / len(go_all) if go_all else 0.0
+    f1 = 2 * pr * r / (pr + r) if pr + r else 0.0
+    phrase_results["all"] = {
+        "gold": len(go_all), "pred": len(po_all),
+        "jaccard": round(j, 4), "precision": round(pr, 4),
+        "recall": round(r, 4), "f1": round(f1, 4),
+    }
+    diag["phrase_only"] = phrase_results
+
+    # Speaker mismatch: phrase near-matches between gold and pred with wrong speaker
+    gold_full = _parse_pairs(gold_df, "opening", "opening") | _parse_pairs(gold_df, "closing", "closing")
+    pred_full = _parse_pairs(pred_df, "opening", "opening") | _parse_pairs(pred_df, "closing", "closing")
+    speaker_mismatches = 0
+    for g_s, g_p, g_c in gold_full:
+        for p_s, p_p, p_c in pred_full:
+            if g_c == p_c and g_s != p_s and SequenceMatcher(None, g_p, p_p).ratio() >= 0.8:
+                speaker_mismatches += 1
+                break
+    diag["speaker_mismatch_count"] = speaker_mismatches
+
+    return diag
 
 
 def _evaluate(gold_df: pd.DataFrame, pred_df: pd.DataFrame) -> dict[str, dict]:
@@ -271,6 +337,13 @@ def main(argv: list[str] | None = None) -> None:
         "--fixed-threshold", type=float, default=None,
         help="Если указан — использовать фиксированный порог вместо sweep",
     )
+    parser.add_argument(
+        "--diagnostics-output", type=str, default=None,
+        help=(
+            "Если указан — сохранить расширенные диагностики (phrase-only метрики, "
+            "speaker mismatch count) в отдельный JSON файл."
+        ),
+    )
     args = parser.parse_args(argv)
 
     records = load_jsonl(args.fit_input)
@@ -332,14 +405,27 @@ def main(argv: list[str] | None = None) -> None:
                 f"P={m['precision']:.4f} R={m['recall']:.4f} F1={m['f1']:.4f} "
                 f"matched={m['matched']} exact={m['exact']} avg_sim={m['avg_sim']:.4f}"
             )
+
+            diag = None
+            if args.diagnostics_output:
+                diag = _compute_diagnostics(gold_df, pred_df)
+                po = diag["phrase_only"]["all"]
+                print(
+                    f"  phrase-only (no speaker): pred={po['pred']} "
+                    f"P={po['precision']:.4f} R={po['recall']:.4f} F1={po['f1']:.4f} "
+                    f"speaker_mismatches={diag['speaker_mismatch_count']}"
+                )
             print()
 
-            comparison.append({
+            entry: dict = {
                 "classifier": clf_type,
                 "threshold_used": round(threshold, 4),
                 "cv_report": cv_rep,
                 "validation_metrics": metrics,
-            })
+            }
+            if diag is not None:
+                entry["diagnostics"] = diag
+            comparison.append(entry)
 
     # --- Сводная таблица ---
     print("\n" + "=" * 100)
@@ -368,6 +454,17 @@ def main(argv: list[str] | None = None) -> None:
     with out_path.open("w", encoding="utf-8") as f:
         json.dump(comparison, f, ensure_ascii=False, indent=2)
     print(f"\nСохранено: {out_path}")
+
+    if args.diagnostics_output:
+        diag_all = [
+            {"classifier": e["classifier"], "diagnostics": e.get("diagnostics", {})}
+            for e in comparison
+        ]
+        diag_path = Path(args.diagnostics_output)
+        diag_path.parent.mkdir(parents=True, exist_ok=True)
+        with diag_path.open("w", encoding="utf-8") as f:
+            json.dump(diag_all, f, ensure_ascii=False, indent=2)
+        print(f"Диагностики сохранены: {diag_path}")
 
 
 if __name__ == "__main__":
