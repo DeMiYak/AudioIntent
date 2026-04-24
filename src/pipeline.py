@@ -154,6 +154,66 @@ def stage_mode_flags(args: argparse.Namespace) -> dict[str, bool]:
     }
 
 
+_CLOSE_LEXICAL_KW = frozenset(["до свидания", "пока", "прощай", "увидимся", "созвонимся"])
+_OPEN_LEXICAL_KW = frozenset(["познакомимся", "знакомиться", "меня зовут", "здравствуйте"])
+_CONF_MARGIN = 0.05
+
+
+def resolve_intent_conflicts(
+    predictions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Гарантирует, что у каждого utterance_id есть не более одного типа (open/close).
+
+    Алгоритм разрешения конфликта:
+    1. Сравнить максимальную уверенность каждого типа; выбрать более уверенный,
+       если разница > _CONF_MARGIN.
+    2. Иначе применить лексические жёсткие переопределения (закрывающие слова
+       имеют приоритет над открывающими при равной уверенности).
+    3. Если ни одно правило не решает конфликт — отбросить оба.
+    """
+    by_uid: dict[str, list[dict[str, Any]]] = {}
+    for pred in predictions:
+        uid = str(pred.get("utterance_id", ""))
+        by_uid.setdefault(uid, []).append(pred)
+
+    result: list[dict[str, Any]] = []
+    for uid, preds in by_uid.items():
+        types = {str(p.get("intent_type", "")) for p in preds}
+        if "contact_open" not in types or "contact_close" not in types:
+            result.extend(preds)
+            continue
+
+        open_preds = [p for p in preds if str(p.get("intent_type", "")) == "contact_open"]
+        close_preds = [p for p in preds if str(p.get("intent_type", "")) == "contact_close"]
+        open_conf = max(float(p.get("confidence", 0.5)) for p in open_preds)
+        close_conf = max(float(p.get("confidence", 0.5)) for p in close_preds)
+
+        if open_conf - close_conf > _CONF_MARGIN:
+            keep = "contact_open"
+        elif close_conf - open_conf > _CONF_MARGIN:
+            keep = "contact_close"
+        else:
+            text = str((open_preds + close_preds)[0].get("source_text", "")).lower()
+            has_close = any(kw in text for kw in _CLOSE_LEXICAL_KW)
+            has_open = any(kw in text for kw in _OPEN_LEXICAL_KW)
+            if has_close and not has_open:
+                keep = "contact_close"
+            elif has_open and not has_close:
+                keep = "contact_open"
+            else:
+                keep = None  # неоднозначно — отбросить оба
+
+        if keep is not None:
+            for p in preds:
+                if str(p.get("intent_type", "")) == keep:
+                    p_copy = dict(p)
+                    p_copy["conflict_resolution"] = keep
+                    result.append(p_copy)
+
+    return result
+
+
 def _run_intent_extraction(
     utterances: list[dict[str, Any]],
     intent_mode: str,
@@ -172,16 +232,18 @@ def _run_intent_extraction(
     from .ml_intent import predict_for_records as ml_predict_for_records
 
     if intent_mode == "rule":
-        return rbi_predict_for_records(
+        preds = rbi_predict_for_records(
             records=utterances,
             compiled_lexicon=compiled_lexicon or {},
         )
+        return resolve_intent_conflicts(preds)
 
     if intent_mode == "ml":
         if ml_model is None:
             raise RuntimeError("--intent-mode ml requires --ml-model to be provided")
         preds = ml_predict_for_records(records=utterances, model=ml_model)
-        return [p for p in preds if float(p.get("confidence", 1.0)) >= ml_confidence_threshold]
+        preds = [p for p in preds if float(p.get("confidence", 1.0)) >= ml_confidence_threshold]
+        return resolve_intent_conflicts(preds)
 
     # combined: rule-based фильтруется ML-согласием; ML добавляет непокрытые случаи
     rbi_preds = rbi_predict_for_records(
@@ -200,10 +262,10 @@ def _run_intent_extraction(
     }
 
     # Rule-based пропускаются только если ML согласен с тем же типом для той же реплики.
-    # Исключение: MANUAL_PATTERNS освобождены от фильтра — они добавлялись именно для
-    # случаев, которые ML пропускает.
-    from .rule_based_intent import CLOSE_MANUAL_RULES, OPEN_MANUAL_RULES
-    manual_rule_names = OPEN_MANUAL_RULES | CLOSE_MANUAL_RULES
+    # Исключение: только Tier A освобождён от фильтра — однозначные паттерны без риска FP.
+    # Tier B и Tier C обязательно проходят ML-фильтр.
+    from .rule_based_intent import MANUAL_RULES_TIER_A
+    manual_rule_names = MANUAL_RULES_TIER_A
 
     seen: set[tuple[str, str]] = set()
     merged: list[dict[str, Any]] = []
@@ -221,37 +283,7 @@ def _run_intent_extraction(
             seen.add(key)
             merged.append(pred)
 
-    # Устранение двойных меток: если одна реплика получила и opening, и closing,
-    # rule-based предсказание удаляется только если ML классифицирует эту реплику
-    # в противоположный тип (ML более контекстуально обоснован при конфликте).
-    uid_types: dict[str, set[str]] = {}
-    for pred in merged:
-        uid = str(pred.get("utterance_id", ""))
-        uid_types.setdefault(uid, set()).add(str(pred.get("intent_type", "")))
-
-    ml_uid_types: dict[str, str] = {
-        str(p.get("utterance_id", "")): str(p.get("intent_type", ""))
-        for p in ml_preds
-    }
-
-    rbi_uid_types: set[tuple[str, str]] = {
-        (str(p.get("utterance_id", "")), str(p.get("intent_type", "")))
-        for p in rbi_preds
-    }
-
-    filtered: list[dict[str, Any]] = []
-    for pred in merged:
-        uid = str(pred.get("utterance_id", ""))
-        pred_type = str(pred.get("intent_type", ""))
-        if uid_types.get(uid, set()) == {"contact_open", "contact_close"}:
-            ml_type = ml_uid_types.get(uid)
-            # Если это rule-based предсказание и ML указывает противоположный тип —
-            # отбрасываем rule-based в пользу ML
-            is_rbi = (uid, pred_type) in rbi_uid_types
-            if is_rbi and ml_type and ml_type != pred_type:
-                continue
-        filtered.append(pred)
-    return filtered
+    return resolve_intent_conflicts(merged)
 
 
 def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
@@ -337,8 +369,8 @@ def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
                 "или положите её в data/raw/validation/audio_profiles."
             )
 
-        from resemblyzer import VoiceEncoder
         from .speaker_id import (
+            VoiceEncoder,
             build_character_embeddings,
             discover_sample_groups,
             save_json as save_json_speaker,
@@ -547,6 +579,7 @@ def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             speaker_embeddings=speaker_embeddings,
             character_embeddings=character_embeddings,
             similarity_threshold=args.similarity_threshold,
+            similarity_margin_threshold=args.similarity_margin_threshold,
             top_k=args.top_k_candidates,
         )
         utterances_named = apply_assignments_to_utterances(
@@ -564,6 +597,11 @@ def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             ml_model=ml_model,
             ml_confidence_threshold=args.ml_confidence_threshold,
         )
+
+        if args.use_sequence_decoder and predictions:
+            from .sequence_decode import viterbi_decode
+            predictions = viterbi_decode(utterances_named, predictions)
+
         save_jsonl_speaker(predictions, predictions_path)
 
         row = aggregate_window_predictions(window, predictions, unknown_speaker_name=args.unknown_speaker_name)
@@ -691,6 +729,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-total-duration-sec", type=float, default=1.5)
     parser.add_argument("--max-total-duration-sec", type=float, default=45.0)
     parser.add_argument("--similarity-threshold", type=float, default=0.65)
+    parser.add_argument(
+        "--similarity-margin-threshold",
+        type=float,
+        default=0.05,
+        help=(
+            "Минимальная разница top1-top2 cosine similarity для уверенного сопоставления. "
+            "Спикеры с margin ниже порога помечаются unknown."
+        ),
+    )
     parser.add_argument("--top-k-candidates", type=int, default=3)
     parser.add_argument("--unknown-speaker-label", type=str, default="unknown_speaker")
     parser.add_argument("--unknown-speaker-name", type=str, default="unknown")
@@ -721,6 +768,16 @@ def parse_args() -> argparse.Namespace:
             "Минимальный порог уверенности ML-предсказания (0.0–1.0). "
             "Предсказания ниже порога отбрасываются. "
             "Применяется в режимах ml и combined. По умолчанию 0.5."
+        ),
+    )
+    parser.add_argument(
+        "--use-sequence-decoder",
+        action="store_true",
+        default=False,
+        help=(
+            "Применить Viterbi-декодер поверх предсказаний намерений. "
+            "Отбрасывает изолированные слабые события и штрафует close→open без паузы. "
+            "По умолчанию отключён."
         ),
     )
     parser.add_argument(
