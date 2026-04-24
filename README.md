@@ -79,7 +79,7 @@ closing = "Алина - пока"
 - **pandas / openpyxl** — чтение Excel, подготовка таблиц, экспорт в `xlsx`.
 - **faster-whisper** — ASR (запускается на Colab, артефакты используются локально).
 - **pyannote.audio** — speaker diarization (запускается на Colab).
-- **Resemblyzer** — голосовые эмбеддинги для speaker identification.
+- **SpeechBrain / ECAPA-TDNN** — основной speaker encoder (192-мерные эмбеддинги, модель `spkrec-ecapa-voxceleb`). Resemblyzer используется как fallback, если SpeechBrain недоступен.
 - **scikit-learn** — TF-IDF + LogisticRegression для ML-классификатора; метрики.
 - **joblib** — сериализация ML-модели.
 - **ffmpeg** — извлечение и нормализация аудио.
@@ -184,7 +184,8 @@ python -m src.export_validation_gold \
 **Статус:** реализованы в `src/utterance_builder.py` и `src/speaker_id.py`.
 
 - `--diarization-segment-mode regular` — использовать `regular_segments` из diarization.json (исправляет коллапс спикеров в 6 validation-окнах).
-- Resemblyzer, порог сходства 0.65, мин. длительность аудио на спикера 1.5 с.
+- Speaker encoder: ECAPA-TDNN (SpeechBrain), fallback на Resemblyzer. Порог сходства `--similarity-threshold 0.65`, мин. длительность аудио на спикера 1.5 с.
+- `--similarity-margin-threshold 0.05` — минимальная разница top1-top2 cosine similarity для принятия сопоставления. Спикеры с margin ниже порога помечаются `unknown`, а не форсированно назначаются. Поле `speaker_similarity_margin` добавляется в utterances.
 - Голосовые профили персонажей: `data/raw/validation/audio_profiles/`.
 
 ---
@@ -206,7 +207,14 @@ python -m src.export_validation_gold \
 | opening  | 0.278 | 0.250 | 0.263 | 27      | 7     |
 | closing  | 0.125 | 0.250 | 0.167 | 7       | 1     |
 
-Метрики ограничены качеством speaker attribution (Resemblyzer). Лучший результат достигается при `--intent-mode combined`, `--similarity-threshold 0.48`, `--ml-confidence-threshold 0.35`. Дальнейший тюнинг на validation нецелесообразен — переходим к тестовому фильму.
+Метрики ограничены качеством speaker attribution. Лучший результат достигается при `--intent-mode combined`, `--similarity-threshold 0.48`, `--ml-confidence-threshold 0.35`, `--similarity-margin-threshold 0.05`.
+
+**Поведение combined mode:**
+- Rule-based предсказания проходят только если ML согласен с тем же типом для той же реплики.
+- Исключение: только **Tier A** manual rules (однозначные паттерны: до свидания, увидимся, давайте познакомимся и др.) освобождены от ML-фильтра. Tier B (алло, здравствуй, ну пока) и Tier C (ну всё, давай пока) обязательно проходят фильтр.
+- Конфликт открытие+закрытие для одной реплики разрешается детерминированно: побеждает более уверенное предсказание; при равной уверенности — лексические жёсткие переопределения; иначе оба отбрасываются.
+
+Опциональный `--use-sequence-decoder` применяет Viterbi-декодер поверх предсказаний (по умолчанию отключён). Дальнейший тюнинг на validation нецелесообразен — переходим к тестовому фильму.
 
 **Полный validation pipeline:**
 ```bash
@@ -237,6 +245,8 @@ python -m src.pipeline \
 - `src/predict_intent_model.py` — CLI для инференса на JSONL-репликах
 - `src/evaluate.py` — оценка предсказаний против gold на уровне реплик
 
+**Текущий лучший классификатор: Ridge** (RidgeClassifier + CalibratedClassifierCV), threshold 0.38, F1=0.268 на validation. Сравнение 5 классификаторов — см. `src/compare_classifiers.py`.
+
 **Обучение (Ridge — лучший по F1 на validation):**
 ```bash
 python -m src.train_intent_model \
@@ -253,8 +263,10 @@ python -m src.compare_classifiers \
   --gold-excel data/raw/gold/data_val.xlsx \
   --transcript-dir artifacts/validation_status_svoboden_asr_diarization_colab/windows \
   --samples-dir data/raw/validation/audio_profiles \
-  --output artifacts/classifier_comparison.json
+  --output artifacts/classifier_comparison.json \
+  --diagnostics-output artifacts/classifier_diagnostics.json  # опционально
 ```
+С `--diagnostics-output` добавляется phrase-only оценка (без учёта спикера) и счётчик speaker-mismatch — для диагностики того, сколько ошибок вызвано speaker attribution, а не intent classification.
 
 **Инференс на репликах:**
 ```bash
