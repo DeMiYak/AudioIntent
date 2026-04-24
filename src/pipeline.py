@@ -678,6 +678,7 @@ def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
         "extracted_pairs_output": str(extracted_pairs_path) if extracted_pairs_path is not None else None,
         "gold_output": str(gold_output_path) if gold_output_path is not None else None,
         "window_summaries": all_window_summaries,
+        "args": vars(args),
     }
     dump_json(output_dir / "run_summary.json", overall_summary)
     return overall_summary

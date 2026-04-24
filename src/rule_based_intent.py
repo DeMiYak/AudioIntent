@@ -974,8 +974,16 @@ def score_candidate(candidate: dict[str, Any]) -> float:
     source_end_sec = candidate.get("source_end_sec")
     if start_time is not None and source_start_sec is not None and source_end_sec is not None:
         try:
-            duration = float(source_end_sec) - float(source_start_sec)
-            rel = (float(start_time) - float(source_start_sec)) / duration if duration > 0 else None
+            duration = source_end_sec - source_start_sec
+
+            if 0 <= start_time <= duration + 2.0:
+                # start_time is window-relative
+                rel = start_time / duration
+            else:
+                # start_time is absolute film time
+                rel = (start_time - source_start_sec) / duration
+
+            rel = max(0.0, min(1.0, rel))
         except (TypeError, ValueError):
             rel = None
         if rel is not None:

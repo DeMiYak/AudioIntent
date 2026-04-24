@@ -16,14 +16,14 @@ _STATE_IDX = {state: idx for idx, state in enumerate(STATES)}
 
 # Tuned starting values for sparse film contact events.
 ML_WEIGHT = 1.0
-RARITY_PENALTY = -1.2
+RARITY_PENALTY = -1.8
 TIER_A_BONUS = 4.0
 TIER_B_BONUS = 1.5
 TIER_C_BONUS = 0.5
 LEXICON_STRONG_BONUS = 2.0
 LEXICON_WEAK_BONUS = 0.7
-BOUNDARY_BONUS_STRONG = 1.5
-BOUNDARY_BONUS_WEAK = 0.7
+BOUNDARY_BONUS_STRONG = 0.9
+BOUNDARY_BONUS_WEAK = 0.4
 ANTI_BOUNDARY_PENALTY = -0.8
 LONG_GAP_SEC = 6.0
 REPEAT_WINDOW = 3
@@ -41,6 +41,25 @@ TRANSITION_AFTER_GAP = TRANSITION["none"]
 CLOSE_WORDS = ("до свидания", "пока", "прощай", "увидимся", "созвонимся", "до встречи")
 OPEN_WORDS = ("здравствуйте", "здравствуй", "здрасте", "познаком", "меня зовут")
 
+
+def _lexical_contact_bonus(state: str, text: str) -> float:
+    t = text.lower().replace("ё", "е")
+
+    open_markers = (
+        "привет", "здравств", "здрасте", "доброе утро", "добрый день",
+        "добрый вечер", "алло", "познаком", "меня зовут", "рад знаком"
+    )
+    close_markers = (
+        "пока", "до свидания", "досвидания", "до встречи", "увидимся",
+        "созвонимся", "прощай", "чао", "всего доброго", "всего хорошего",
+        "счастливо"
+    )
+
+    if state == "contact_open" and any(m in t for m in open_markers):
+        return 1.0
+    if state == "contact_close" and any(m in t for m in close_markers):
+        return 1.0
+    return 0.0
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
@@ -140,8 +159,24 @@ def _emission_score(
     conf = _safe_float(pred.get("confidence"), 1.0)
     score = ML_WEIGHT * _logit(conf)
     score += RARITY_PENALTY
-    score += _rule_bonus(pred)
+    score += _rule_bonus(pred) 
+    rule_expr = str(pred.get("rule_expression", ""))
+    text = str(pred.get("source_text") or pred.get("expression") or "")
+    num_words = len(text.split())
+
+    # ML-only predictions are much less reliable than rule/lexicon-supported events.
+    if rule_expr == "ml_classifier":
+        score -= 1.2
+
+        # Contact openings/closings are usually short. Long ML-only utterances are often false positives.
+        if num_words > 8:
+            score -= 1.0
+
+        # Very long ML-only utterances should almost never survive as contact acts.
+        if num_words > 14:
+            score -= 1.5
     score += _boundary_bonus(state, idx, n, gap_before, gap_after)
+    score += _lexical_contact_bonus(state, text)
     return score
 
 
