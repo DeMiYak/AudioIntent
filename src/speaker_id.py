@@ -451,21 +451,97 @@ def build_speaker_embeddings(
     return speaker_embeddings, speaker_profiles
 
 
+
+def _stable_std(values: np.ndarray) -> float:
+    std = float(np.std(values))
+    return std if std >= 1e-6 else 1.0
+
+
+def _build_score_tables(
+    speaker_embeddings: dict[str, np.ndarray],
+    character_embeddings: dict[str, np.ndarray],
+    score_mode: str = "raw",
+) -> tuple[list[str], list[str], np.ndarray, np.ndarray]:
+    """
+    Returns speaker labels, character names, raw cosine matrix, and selected score matrix.
+
+    score_mode='raw'   -> selected score is raw cosine.
+    score_mode='snorm' -> selected score is simple cohort S-Norm:
+                          0.5 * (row z-score + column z-score).
+    """
+    speaker_labels = sorted(speaker_embeddings)
+    character_names = sorted(character_embeddings)
+    raw = np.zeros((len(speaker_labels), len(character_names)), dtype=np.float32)
+
+    for i, speaker_label in enumerate(speaker_labels):
+        for j, character_name in enumerate(character_names):
+            raw[i, j] = cosine_similarity(
+                speaker_embeddings[speaker_label],
+                character_embeddings[character_name],
+            )
+
+    if score_mode == "raw" or raw.size == 0:
+        return speaker_labels, character_names, raw, raw.copy()
+
+    if score_mode != "snorm":
+        raise ValueError("score_mode must be one of: raw, snorm")
+
+    row_mean = raw.mean(axis=1, keepdims=True)
+    row_std = np.array([[_stable_std(raw[i, :])] for i in range(raw.shape[0])], dtype=np.float32)
+    col_mean = raw.mean(axis=0, keepdims=True)
+    col_std = np.array([[_stable_std(raw[:, j]) for j in range(raw.shape[1])]], dtype=np.float32)
+
+    t_norm = (raw - row_mean) / row_std
+    z_norm = (raw - col_mean) / col_std
+    selected = 0.5 * (t_norm + z_norm)
+    return speaker_labels, character_names, raw, selected.astype(np.float32)
+
+
+def _linear_sum_assignment_max(score_matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray, str]:
+    """Maximize a score matrix. Uses scipy if available, greedy fallback otherwise."""
+    try:
+        from scipy.optimize import linear_sum_assignment
+        rows, cols = linear_sum_assignment(-score_matrix)
+        return rows, cols, "hungarian"
+    except Exception:
+        # Fallback: deterministic greedy. This keeps the pipeline runnable without scipy,
+        # but assignment_method exposes that this is not the preferred path.
+        pairs: list[tuple[float, int, int]] = []
+        for i in range(score_matrix.shape[0]):
+            for j in range(score_matrix.shape[1]):
+                pairs.append((float(score_matrix[i, j]), i, j))
+        pairs.sort(key=lambda x: (-x[0], x[1], x[2]))
+        used_rows: set[int] = set()
+        used_cols: set[int] = set()
+        out_rows: list[int] = []
+        out_cols: list[int] = []
+        for _, i, j in pairs:
+            if i in used_rows or j in used_cols:
+                continue
+            used_rows.add(i)
+            used_cols.add(j)
+            out_rows.append(i)
+            out_cols.append(j)
+            if len(used_rows) == score_matrix.shape[0]:
+                break
+        return np.array(out_rows), np.array(out_cols), "greedy_fallback"
+
+
 def assign_speakers_to_characters(
     speaker_embeddings: dict[str, np.ndarray],
     character_embeddings: dict[str, np.ndarray],
     similarity_threshold: float = 0.65,
     similarity_margin_threshold: float = 0.05,
     top_k: int = 3,
+    score_mode: str = "raw",
 ) -> list[dict[str, Any]]:
     """
-    Для каждого speaker_label ищет наиболее похожего персонажа.
+    Assign diarization speaker labels to character names with a global one-to-one solver.
 
-    Использует жадное взаимоисключающее сопоставление (one-to-one).
-    Принимает сопоставление только если:
-      top1_similarity >= similarity_threshold
-      И top1 - top2 >= similarity_margin_threshold (различимость идентификации).
-    Спикеры с недостаточным margin помечаются как unknown, не форсируются.
+    The assignment uses a score matrix and dummy unknown columns so low-confidence
+    speakers can remain unknown instead of being forced to a character.  Threshold
+    and margin are applied to the selected score mode: raw cosine or S-Norm.
+    Raw cosine values are still written to JSON for interpretability.
     """
     if not speaker_embeddings or not character_embeddings:
         return [
@@ -473,97 +549,109 @@ def assign_speakers_to_characters(
                 "speaker_label": sl,
                 "speaker_name": "unknown",
                 "assignment_reason": "no_character_embeddings",
+                "assignment_method": "none",
+                "score_mode": score_mode,
                 "status": "no_character_embeddings",
                 "top1_similarity": None,
                 "top2_similarity": None,
                 "similarity_margin": None,
+                "top1_score": None,
+                "top2_score": None,
+                "score_margin": None,
                 "best_similarity": None,
+                "best_score": None,
                 "top_candidates": [],
             }
             for sl in sorted(speaker_embeddings)
         ]
 
-    # Построить полную матрицу схожести и топ-k для каждого спикера
-    speaker_labels = sorted(speaker_embeddings)
-    all_scores: dict[str, list[dict[str, Any]]] = {}
-    pairs: list[tuple[float, str, str]] = []  # (схожесть, speaker_label, имя персонажа)
+    speaker_labels, character_names, raw_scores, selected_scores = _build_score_tables(
+        speaker_embeddings=speaker_embeddings,
+        character_embeddings=character_embeddings,
+        score_mode=score_mode,
+    )
+    n_speakers = len(speaker_labels)
+    n_chars = len(character_names)
 
-    for speaker_label in speaker_labels:
-        speaker_emb = speaker_embeddings[speaker_label]
-        scored: list[dict[str, Any]] = []
-        for character_name, character_emb in character_embeddings.items():
-            sim = cosine_similarity(speaker_emb, character_emb)
-            scored.append({"character_name": character_name, "similarity": round(sim, 4)})
-            pairs.append((sim, speaker_label, character_name))
-        scored.sort(key=lambda x: (-x["similarity"], x["character_name"]))
-        all_scores[speaker_label] = scored
+    # One unique dummy column per speaker.  A real character must beat this floor
+    # to be selected by the global assignment.
+    unknown_floor = float(similarity_threshold)
+    dummy = np.full((n_speakers, n_speakers), unknown_floor, dtype=np.float32)
+    assignment_scores = np.concatenate([selected_scores, dummy], axis=1)
+    rows, cols, assignment_method = _linear_sum_assignment_max(assignment_scores)
+    assigned_col_by_row = {int(r): int(c) for r, c in zip(rows, cols)}
 
-    # Вычислить top1/top2/margin для каждого спикера и пометить неоднозначных
-    speaker_top1: dict[str, float] = {}
-    speaker_top2: dict[str, float] = {}
-    ineligible_speakers: set[str] = set()  # margin слишком мал для уверенного сопоставления
-
-    for speaker_label in speaker_labels:
-        scored = all_scores[speaker_label]
-        t1 = scored[0]["similarity"] if scored else 0.0
-        t2 = scored[1]["similarity"] if len(scored) >= 2 else 0.0
-        speaker_top1[speaker_label] = t1
-        speaker_top2[speaker_label] = t2
-        if (t1 - t2) < similarity_margin_threshold:
-            ineligible_speakers.add(speaker_label)
-
-    # Жадное взаимоисключающее сопоставление
-    pairs.sort(key=lambda x: -x[0])
-    assigned_speakers: set[str] = set()
-    assigned_characters: set[str] = set()
-    final_assignment: dict[str, tuple[str, float]] = {}  # speaker_label -> (имя персонажа, схожесть)
-
-    for sim, speaker_label, character_name in pairs:
-        if speaker_label in assigned_speakers or character_name in assigned_characters:
-            continue
-        if speaker_label in ineligible_speakers:
-            assigned_speakers.add(speaker_label)  # исключить из дальнейшего рассмотрения
-            continue
-        if sim < similarity_threshold:
-            break  # пары отсортированы по убыванию; ничего лучшего нет
-        final_assignment[speaker_label] = (character_name, sim)
-        assigned_speakers.add(speaker_label)
-        assigned_characters.add(character_name)
-
-    # Сформировать вывод
     assignments: list[dict[str, Any]] = []
-    for speaker_label in speaker_labels:
-        scored_candidates = all_scores[speaker_label]
-        t1 = speaker_top1.get(speaker_label)
-        t2 = speaker_top2.get(speaker_label)
-        margin = round(t1 - t2, 4) if (t1 is not None and t2 is not None) else None
+    for i, speaker_label in enumerate(speaker_labels):
+        order = sorted(range(n_chars), key=lambda j: (-float(selected_scores[i, j]), character_names[j]))
+        top_candidates: list[dict[str, Any]] = []
+        for j in order[:top_k]:
+            top_candidates.append(
+                {
+                    "character_name": character_names[j],
+                    "similarity": round(float(raw_scores[i, j]), 4),
+                    "score": round(float(selected_scores[i, j]), 4),
+                }
+            )
 
-        if speaker_label in final_assignment:
-            character_name, _ = final_assignment[speaker_label]
-            reason = "matched"
-        elif speaker_label in ineligible_speakers:
-            character_name = "unknown"
-            reason = "below_margin"
+        top1_j = order[0] if order else None
+        top2_j = order[1] if len(order) >= 2 else None
+        top1_similarity = float(raw_scores[i, top1_j]) if top1_j is not None else None
+        top2_similarity = float(raw_scores[i, top2_j]) if top2_j is not None else None
+        top1_score = float(selected_scores[i, top1_j]) if top1_j is not None else None
+        top2_score = float(selected_scores[i, top2_j]) if top2_j is not None else None
+        score_margin = (top1_score - top2_score) if (top1_score is not None and top2_score is not None) else None
+        similarity_margin = (top1_similarity - top2_similarity) if (top1_similarity is not None and top2_similarity is not None) else None
+
+        assigned_col = assigned_col_by_row.get(i, n_chars + i)
+        if assigned_col >= n_chars:
+            speaker_name = "unknown"
+            best_similarity = top1_similarity
+            best_score = top1_score
+            reason = "assigned_unknown"
         else:
-            character_name = "unknown"
-            reason = "below_threshold"
+            assigned_score = float(selected_scores[i, assigned_col])
+            assigned_similarity = float(raw_scores[i, assigned_col])
+            # Margin is defined against the best competing real character for this speaker.
+            competing = [float(selected_scores[i, j]) for j in range(n_chars) if j != assigned_col]
+            assigned_margin = assigned_score - max(competing) if competing else assigned_score
+            if assigned_score < similarity_threshold:
+                speaker_name = "unknown"
+                reason = "below_threshold"
+            elif assigned_margin < similarity_margin_threshold:
+                speaker_name = "unknown"
+                reason = "below_margin"
+            else:
+                speaker_name = character_names[assigned_col]
+                reason = "matched"
+            best_similarity = assigned_similarity
+            best_score = assigned_score
+            score_margin = assigned_margin
+            if n_chars >= 2:
+                other_raw = [float(raw_scores[i, j]) for j in range(n_chars) if j != assigned_col]
+                similarity_margin = assigned_similarity - max(other_raw)
 
         assignments.append(
             {
                 "speaker_label": speaker_label,
-                "speaker_name": character_name,
+                "speaker_name": speaker_name,
                 "assignment_reason": reason,
+                "assignment_method": assignment_method,
+                "score_mode": score_mode,
                 "status": "matched" if reason == "matched" else "unmatched",
-                "top1_similarity": round(t1, 4) if t1 is not None else None,
-                "top2_similarity": round(t2, 4) if t2 is not None else None,
-                "similarity_margin": margin,
-                "best_similarity": round(t1, 4) if t1 is not None else None,
-                "top_candidates": scored_candidates[:top_k],
+                "top1_similarity": safe_round(top1_similarity),
+                "top2_similarity": safe_round(top2_similarity),
+                "similarity_margin": safe_round(similarity_margin),
+                "top1_score": safe_round(top1_score),
+                "top2_score": safe_round(top2_score),
+                "score_margin": safe_round(score_margin),
+                "best_similarity": safe_round(best_similarity),
+                "best_score": safe_round(best_score),
+                "top_candidates": top_candidates,
             }
         )
 
     return assignments
-
 
 def apply_assignments_to_utterances(
     utterances: list[dict[str, Any]],
@@ -586,10 +674,18 @@ def apply_assignments_to_utterances(
             utt_copy["speaker_name"] = "unknown"
             utt_copy["speaker_similarity"] = None
             utt_copy["speaker_similarity_margin"] = None
+            utt_copy["speaker_assignment_score"] = None
+            utt_copy["speaker_score_margin"] = None
+            utt_copy["speaker_score_mode"] = None
         else:
             utt_copy["speaker_name"] = assignment["speaker_name"]
-            utt_copy["speaker_similarity"] = assignment["best_similarity"]
+            # Backward-compatible raw cosine fields.
+            utt_copy["speaker_similarity"] = assignment.get("best_similarity")
             utt_copy["speaker_similarity_margin"] = assignment.get("similarity_margin")
+            # New selected-score fields; may be raw cosine or S-Norm depending on score_mode.
+            utt_copy["speaker_assignment_score"] = assignment.get("best_score")
+            utt_copy["speaker_score_margin"] = assignment.get("score_margin")
+            utt_copy["speaker_score_mode"] = assignment.get("score_mode")
 
         updated.append(utt_copy)
 
@@ -687,8 +783,18 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.05,
         help=(
-            "Минимальная разница top1-top2 cosine similarity для уверенного сопоставления. "
+            "Минимальная разница между лучшим и вторым score для уверенного сопоставления. "
             "Спикеры с margin ниже порога помечаются unknown."
+        ),
+    )
+    parser.add_argument(
+        "--speaker-score-mode",
+        type=str,
+        default="raw",
+        choices=["raw", "snorm"],
+        help=(
+            "Score for speaker-character assignment: raw cosine or cohort-normalized S-Norm. "
+            "Для v13 с ECAPA начните с raw + threshold=0.30 + margin=0.02; затем сравните snorm."
         ),
     )
     parser.add_argument(
@@ -766,6 +872,7 @@ def main() -> None:
         similarity_threshold=args.similarity_threshold,
         similarity_margin_threshold=args.similarity_margin_threshold,
         top_k=3,
+        score_mode=args.speaker_score_mode,
     )
 
     updated_utterances = apply_assignments_to_utterances(
@@ -777,6 +884,7 @@ def main() -> None:
     mapping_payload = {
         "similarity_threshold": args.similarity_threshold,
         "similarity_margin_threshold": args.similarity_margin_threshold,
+        "speaker_score_mode": args.speaker_score_mode,
         "character_profiles": character_profiles,
         "speaker_profiles": speaker_profiles,
         "assignments": assignments,

@@ -220,16 +220,30 @@ def _run_intent_extraction(
     compiled_lexicon: dict[str, Any] | None,
     ml_model: Any | None,
     ml_confidence_threshold: float = 0.5,
+    open_threshold: float | None = None,
+    close_threshold: float | None = None,
 ) -> list[dict[str, Any]]:
     """
     Dispatches intent extraction to rule-based, ML, or combined mode.
 
     intent_mode: 'rule' | 'ml' | 'combined'
     Combined = union of both; rule-based takes priority on duplicate utterance+intent.
-    ml_confidence_threshold: minimum ML confidence to accept a prediction (applied in
-      both 'ml' and 'combined' modes).
+    ml_confidence_threshold: fallback minimum confidence (both labels).
+    open_threshold / close_threshold: per-label overrides (take precedence).
     """
     from .ml_intent import predict_for_records as ml_predict_for_records
+
+    _open_thr = open_threshold if open_threshold is not None else ml_confidence_threshold
+    _close_thr = close_threshold if close_threshold is not None else ml_confidence_threshold
+
+    def _passes_threshold(pred: dict[str, Any]) -> bool:
+        conf = float(pred.get("confidence", 1.0))
+        intent = str(pred.get("intent_type", ""))
+        if intent == "contact_open":
+            return conf >= _open_thr
+        if intent == "contact_close":
+            return conf >= _close_thr
+        return conf >= ml_confidence_threshold
 
     if intent_mode == "rule":
         preds = rbi_predict_for_records(
@@ -242,7 +256,7 @@ def _run_intent_extraction(
         if ml_model is None:
             raise RuntimeError("--intent-mode ml requires --ml-model to be provided")
         preds = ml_predict_for_records(records=utterances, model=ml_model)
-        preds = [p for p in preds if float(p.get("confidence", 1.0)) >= ml_confidence_threshold]
+        preds = [p for p in preds if _passes_threshold(p)]
         return resolve_intent_conflicts(preds)
 
     # combined: rule-based фильтруется ML-согласием; ML добавляет непокрытые случаи
@@ -253,7 +267,7 @@ def _run_intent_extraction(
     if ml_model is None:
         return rbi_preds
     ml_preds = ml_predict_for_records(records=utterances, model=ml_model)
-    ml_preds = [p for p in ml_preds if float(p.get("confidence", 1.0)) >= ml_confidence_threshold]
+    ml_preds = [p for p in ml_preds if _passes_threshold(p)]
 
     # Множество пар (utterance_id, intent_type), одобренных ML
     ml_agreed: set[tuple[str, str]] = {
@@ -581,6 +595,7 @@ def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             similarity_threshold=args.similarity_threshold,
             similarity_margin_threshold=args.similarity_margin_threshold,
             top_k=args.top_k_candidates,
+            score_mode=args.speaker_score_mode,
         )
         utterances_named = apply_assignments_to_utterances(
             utterances=utterances,
@@ -596,6 +611,8 @@ def run_validation_pipeline(args: argparse.Namespace) -> dict[str, Any]:
             compiled_lexicon=compiled_lexicon,
             ml_model=ml_model,
             ml_confidence_threshold=args.ml_confidence_threshold,
+            open_threshold=args.open_threshold,
+            close_threshold=args.close_threshold,
         )
 
         if args.use_sequence_decoder and predictions:
@@ -734,8 +751,19 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.05,
         help=(
-            "Минимальная разница top1-top2 cosine similarity для уверенного сопоставления. "
+            "Минимальная разница между лучшим и вторым speaker score для уверенного сопоставления. "
             "Спикеры с margin ниже порога помечаются unknown."
+        ),
+    )
+    parser.add_argument(
+        "--speaker-score-mode",
+        type=str,
+        default="raw",
+        choices=["raw", "snorm"],
+        help=(
+            "Score for speaker-character assignment: raw cosine or cohort-normalized S-Norm. "
+            "For v13 ECAPA calibration use raw with --similarity-threshold 0.30 "
+            "and --similarity-margin-threshold 0.02; then compare snorm separately."
         ),
     )
     parser.add_argument("--top-k-candidates", type=int, default=3)
@@ -766,8 +794,26 @@ def parse_args() -> argparse.Namespace:
         default=0.5,
         help=(
             "Минимальный порог уверенности ML-предсказания (0.0–1.0). "
-            "Предсказания ниже порога отбрасываются. "
+            "Резервный порог для обоих классов; перекрывается --open-threshold / --close-threshold. "
             "Применяется в режимах ml и combined. По умолчанию 0.5."
+        ),
+    )
+    parser.add_argument(
+        "--open-threshold",
+        type=float,
+        default=0.32,
+        help=(
+            "Порог уверенности ML для contact_open (перекрывает --ml-confidence-threshold). "
+            "По умолчанию 0.32."
+        ),
+    )
+    parser.add_argument(
+        "--close-threshold",
+        type=float,
+        default=0.30,
+        help=(
+            "Порог уверенности ML для contact_close (перекрывает --ml-confidence-threshold). "
+            "По умолчанию 0.30."
         ),
     )
     parser.add_argument(

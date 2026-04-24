@@ -10,6 +10,25 @@ from typing import Any
 
 TOKEN_PATTERN = re.compile(r"\w+|[^\w\s]", re.UNICODE)
 
+# Паттерны для предобработки текста перед сопоставлением с MANUAL_PATTERNS
+_REPEATED_LETTERS = re.compile(r"(.)\1{2,}", re.UNICODE)  # аааллло → алло
+_LEADING_PARTICLES = re.compile(
+    r"^(?:ну|э+|а+|вот|ладно|слушай|слушайте)[,\s]+", re.IGNORECASE | re.UNICODE
+)
+
+
+def preprocess_for_pattern_matching(text: str) -> str:
+    """
+    Нормализация текста перед сопоставлением с MANUAL_PATTERNS:
+    - collapsed repeated letters (аааалло → алло)
+    - removed leading filler particles (ну, э, а, вот, ладно)
+    Длина строки может измениться — результат используется только для
+    flag-проверки; char spans берутся из оригинального текста.
+    """
+    text = _REPEATED_LETTERS.sub(r"\1\1", text)
+    text = _LEADING_PARTICLES.sub("", text)
+    return text
+
 # Группы маркеров высокой точности.
 # Сильные маркеры могут существовать как компактные фразы; слабые маркерам обычно нужен контекст.
 OPEN_STRONG = {
@@ -64,6 +83,11 @@ OPEN_MANUAL_RULES = {
     "privetstvuyu",
     "dobro_pozhalovat",
     "lets_get_acquainted",
+    # Разговорные / телефонные
+    "zdravste_colloquial",
+    "ale_phone",
+    "slushayu_phone",
+    "allo_repeated",
 }
 
 CLOSE_MANUAL_RULES = {
@@ -85,6 +109,9 @@ CLOSE_MANUAL_RULES = {
     "davay_poka",
     "schastlivo_generic",
     "udachi_generic",
+    # Разговорные / телефонные
+    "sozvonimsya_generic",
+    "do_svidaniya_compact",
 }
 
 # ---------------------------------------------------------------------------
@@ -111,6 +138,8 @@ MANUAL_RULES_TIER_A: frozenset[str] = frozenset({
     "lets_get_acquainted",
     "privetstvuyu",
     "dobro_pozhalovat",
+    "zdravste_colloquial",   # «здрасте» — разговорное, но однозначное
+    "allo_repeated",         # аааллло-стиль — телефонный, однозначный
     # Однозначные прощания
     "do_svidaniya_generic",
     "vsego_dobrogo",
@@ -118,6 +147,8 @@ MANUAL_RULES_TIER_A: frozenset[str] = frozenset({
     "poka_poka",
     "bye_chao",
     "do_vstrechi",
+    "sozvonimsya_generic",   # «созвонимся» — явное завершение
+    "do_svidaniya_compact",  # «досвидания» (слитно) — однозначное прощание
 })
 
 MANUAL_RULES_TIER_B: frozenset[str] = frozenset({
@@ -128,6 +159,9 @@ MANUAL_RULES_TIER_B: frozenset[str] = frozenset({
     # «Ну, пока» и «счастливо» — прощания, но встречаются в нейтральных контекстах
     "nu_poka",
     "schastlivo_generic",
+    # Телефонные маркеры — сильные, но требуют ML-подтверждения вне телефонного контекста
+    "ale_phone",
+    "slushayu_phone",
 })
 
 MANUAL_RULES_TIER_C: frozenset[str] = frozenset({
@@ -365,6 +399,57 @@ MANUAL_PATTERNS: list[dict[str, Any]] = [
         "name": "dobro_pozhalovat",
         "pattern": re.compile(
             r"(?<!\w)добро\s+пожаловать(?!\w)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    # ----------------------------------------------------------------
+    # Высокий recall: разговорные варианты и телефонные маркеры
+    # ----------------------------------------------------------------
+    {
+        "intent_type": "contact_open",
+        "name": "zdravste_colloquial",
+        "pattern": re.compile(
+            r"(?<!\w)здрасте(?!\w)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_open",
+        "name": "ale_phone",
+        "pattern": re.compile(
+            r"(?<!\w)але(?!\w)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_open",
+        "name": "slushayu_phone",
+        "pattern": re.compile(
+            r"(?<!\w)слушаю(?!\w)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_close",
+        "name": "sozvonimsya_generic",
+        "pattern": re.compile(
+            r"(?<!\w)созвонимся(?!\w)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_close",
+        "name": "do_svidaniya_compact",
+        "pattern": re.compile(
+            r"(?<!\w)досвидания(?!\w)",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    },
+    {
+        "intent_type": "contact_open",
+        "name": "allo_repeated",
+        "pattern": re.compile(
+            r"(?<!\w)а+[лл]+[оa](?!\w)",
             re.IGNORECASE | re.UNICODE,
         ),
     },
@@ -726,6 +811,11 @@ def collect_candidates_for_text(
     Ищет все возможные rule-based совпадения в реплике.
     """
     normalized_text = normalize_for_matching(text)
+    preprocessed_text = preprocess_for_pattern_matching(text)
+    # Offset added to preprocessed spans to recover positions in original text.
+    _pm = _LEADING_PARTICLES.match(text)
+    _prefix_skip = _pm.end() if _pm else 0
+
     candidates: list[dict[str, Any]] = []
 
     for intent_type, items in compiled_lexicon.items():
@@ -758,6 +848,7 @@ def collect_candidates_for_text(
                     }
                 )
 
+    # Run MANUAL_PATTERNS on original text (exact spans).
     for pattern_info in MANUAL_PATTERNS:
         intent_type = pattern_info["intent_type"]
         for match in pattern_info["pattern"].finditer(text):
@@ -782,6 +873,39 @@ def collect_candidates_for_text(
                     "rule_frequency": 999,
                 }
             )
+
+    # Also run MANUAL_PATTERNS on preprocessed text to catch utterances whose
+    # leading filler particles or repeated letters would otherwise block a match.
+    # Spans are mapped back to original text using _prefix_skip.  Duplicates are
+    # collapsed later in predict_for_record via best_by_span deduplication.
+    if preprocessed_text != text:
+        for pattern_info in MANUAL_PATTERNS:
+            intent_type = pattern_info["intent_type"]
+            for match in pattern_info["pattern"].finditer(preprocessed_text):
+                char_start = match.start() + _prefix_skip
+                char_end = min(match.end() + _prefix_skip, len(text))
+                if char_start >= len(text):
+                    continue
+                token_start, token_end = char_span_to_token_span(text, char_start, char_end)
+                matched_text = text[char_start:char_end]
+                candidates.append(
+                    {
+                        "dialogue_id": dialogue_id,
+                        "utterance_id": utterance_id,
+                        "speaker_name": speaker_name,
+                        "source_text": text,
+                        "matched_text": matched_text,
+                        "expression": matched_text,
+                        "intent_type": intent_type,
+                        "char_start": char_start,
+                        "char_end": char_end,
+                        "token_start": token_start,
+                        "token_end": token_end,
+                        "confidence": 1.0,
+                        "rule_expression": pattern_info["name"],
+                        "rule_frequency": 999,
+                    }
+                )
 
     return candidates
 
