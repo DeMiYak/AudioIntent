@@ -22,7 +22,6 @@ import json
 import subprocess
 import sys
 import tempfile
-from collections import defaultdict
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -371,7 +370,7 @@ def main(argv: list[str] | None = None) -> None:
                 )
 
             # --- Обучение на полных данных ---
-            print(f"  Обучение на полных данных...")
+            print("  Обучение на полных данных...")
             model = IntentClassifier(classifier_type=clf_type)
             model.fit(records)
             model_path = tmp / f"model_{clf_type}.joblib"
