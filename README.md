@@ -1,243 +1,180 @@
-# Извлечение выражений установления и прекращения контакта в русском фильме
+# Извлечение реплик установления и прекращения контакта в русскоязычном фильме
 
-Проект решает задачу извлечения реплик установления и прекращения контакта в русскоязычных фильмах и приводит результат к формату оценки из `evaluation.ipynb`.
+Проект решает задачу автоматического извлечения реплик, которые устанавливают или завершают контакт между персонажами: приветствия, прощания, знакомства, начала и завершения коротких взаимодействий. Итоговый результат приводится к Excel-таблице с колонками `opening` и `closing`, где значения имеют формат `Спикер - фраза`.
+
+Документация описывает текущий рабочий снимок кода из архива `v11.zip` и не предполагает наличие модулей, которых нет в `src/`.
 
 ---
 
-## Постановка задачи
+## 1. Входные и выходные данные
 
-### Что является входом
+### Вход
 
-В проекте используются три группы входных данных.
+1. Gold-разметка: `data/raw/gold/data_val.xlsx`.
+   - Лист `Диалоги` используется для обучения rule-based и ML-компонентов.
+   - Лист `Вал - Статус свободен` используется для validation-оценки.
+   - Лист с персонажами validation-фильма используется как справочная информация.
 
-1. **Gold-разметка** в `data/raw/gold/data_val.xlsx`:
-   - лист **`Диалоги`** — источник примеров для обучения ML-модели;
-   - лист **`Вал - Статус свободен`** — validation-окна с gold-парами;
-   - лист **`Статус свободен - персонажи`** — список персонажей validation-фильма.
+2. Validation-фильм `Статус: свободен`:
+   - медиафайл фильма;
+   - папка голосовых профилей персонажей: `data/raw/validation/audio_profiles/`;
+   - артефакты ASR и diarization из Colab: `artifacts/validation_status_svoboden_asr_diarization_colab/windows/`.
 
-2. **Validation-данные** для фильма **«Статус: свободен»**:
-   - видео и/или аудио фильма;
-   - папка `audio_profiles` с голосовыми профилями персонажей.
+3. Test-фильм `Питер FM`:
+   - медиафайл фильма;
+   - папка голосовых профилей: `data/raw/test/audio_profile/`;
+   - артефакты ASR и diarization из Colab.
 
-3. **Test-данные** для фильма **«Питер FM»**:
-   - видео и/или аудио фильма (только медиафайл, без gold-разметки).
+### Выход
 
-Поддерживаются форматы: `mkv`, `ac3`, `dts`, `wav`, `mp3`, `flac`, `m4a`, `aac`, `mp4`.
-
-### Что является целевым выходом
-
-Целевой результат для оценки — две колонки:
-
-- `opening`
-- `closing`
-
-Значения этих колонок должны иметь вид:
-
-- `Спикер - фраза`
-- несколько пар внутри одной ячейки разделяются через `;`
-
-Пример:
+Основной файл для оценки:
 
 ```text
-opening = "Никита - привет; Алина - здравствуй"
-closing = "Алина - пока"
+extracted_pairs.xlsx
 ```
 
-- `Временная метка - спикер - фраза - тип`
-- дополнительный вывод, ячейки разделяются на "Время начала", "Время конца", "Спикер - фраза" в столбцах-типах (opening-closing)
+Колонки:
 
- Файл `src/evaluation.ipynb` ожидает `Спикер - фраза`.
-
-### Что оценивается
-
-На validation-выборке качество считается по листу **`Вал - Статус свободен`**, где для каждого окна уже заданы:
-- временные границы фрагмента;
-- gold-значения в колонках `opening` и `closing`.
-
-Весь pipeline должен приводить сырые аудио- и видео-данные к файлу `extracted_pairs.xlsx`, совместимому с ноутбуком оценки.
-
----
-
-## Описание решения
-
-### Общая идея
-
-Решение построено как поэтапный pipeline:
-
-1. из gold-разметки (лист `Диалоги`) подготавливаются обучающие примеры;
-2. на их основе строится rule-based baseline **и** обучается ML-классификатор;
-3. для каждого validation-окна вырезается соответствующий фрагмент аудио;
-4. выполняются ASR и diarization;
-5. из этих результатов собираются реплики (`utterances`);
-6. diarization-speakers сопоставляются с персонажами через голосовые профили;
-7. по тексту реплик извлекаются `opening` / `closing` (rule-based, ML, или оба);
-8. найденные пары агрегируются в Excel-формат `Спикер - фраза`.
-
-### Стек
-
-- **Python** — основной язык проекта.
-- **pandas / openpyxl** — чтение Excel, подготовка таблиц, экспорт в `xlsx`.
-- **faster-whisper** — ASR (запускается на Colab, артефакты используются локально).
-- **pyannote.audio** — speaker diarization (запускается на Colab).
-- **Resemblyzer** — голосовые эмбеддинги для speaker identification.
-- **scikit-learn** — TF-IDF + LogisticRegression для ML-классификатора; метрики.
-- **joblib** — сериализация ML-модели.
-- **ffmpeg** — извлечение и нормализация аудио.
-- **Jupyter Notebook** — прогон validation pipeline и оценка метрик.
-
-Зависимости для локального запуска: `requirements.txt`.
-Зависимости для Google Colab ноутбуков уже представлены внутри самих ноутбуков. Достаточно просто один раз запустить все ячейки
-
----
-
-## Шаги реализации
-
-### Шаг 1. Зафиксировать формат задачи и структуру проекта
-
-**Статус:** выполнен.
-
-**Файлы этапа:**
-- `README.md`
-- `requirements.txt`
-- `configs/model.yaml`, `configs/paths.yaml`
-
-Зафиксирована структура репозитория и целевой формат `opening` / `closing`.
-
----
-
-### Шаг 2. Подготовить gold-разметку из листа `Диалоги`
-
-**Статус:** выполнен.
-
-**Файлы этапа:**
-- `src/preprocess_gold.py`
-- `data/raw/gold/data_val.xlsx`
-- `data/processed/gold_dialogues.jsonl` — 1170 реплик из 18 фильмов
-- `data/processed/gold_stats.json`
-
-```bash
-python -m src.preprocess_gold \
-  --input data/raw/gold/data_val.xlsx \
-  --output data/processed/gold_dialogues.jsonl \
-  --stats-output data/processed/gold_stats.json
+```text
+opening | closing
 ```
 
-Распределение меток: 582 none / 413 contact_open / 178 contact_close.
+Формат значения:
+
+```text
+Спикер - фраза
+```
+
+Если в одном окне найдено несколько событий одного типа, они объединяются в одной ячейке через `;`.
+
+Дополнительный файл для просмотра результата на тестовом фильме:
+
+```text
+detailed_pairs.xlsx
+```
+
+Он создаётся модулем `src.export_detailed_pairs` и содержит построчную таблицу найденных событий.
 
 ---
 
-### Шаг 3. Построить rule-based baseline по gold-разметке
+## 2. Краткое описание pipeline
 
-**Статус:** выполнен, стабилизирован.
+Общий порядок обработки:
 
-**Файлы этапа:**
-- `src/rule_based_intent.py` — TF-IDF лексикон (229 open / 119 close) + MANUAL_PATTERNS
+1. Подготовить обучающие примеры из gold-разметки.
+2. Построить rule-based лексикон.
+3. Обучить ML-классификатор намерений.
+4. Получить ASR-транскрипт фильма через faster-whisper.
+5. Получить diarization через pyannote.
+6. Собрать реплики из ASR + diarization.
+7. Сопоставить diarization-спикеров с персонажами по голосовым профилям через Resemblyzer.
+8. Извлечь `contact_open` / `contact_close` rule-based, ML или combined-режимом.
+9. Агрегировать найденные события в Excel-таблицу.
 
-Ключевые механизмы: `collect_candidates_for_text`, `score_candidate`, `expand_match_to_phrase`, `acceptance_threshold`.
-MANUAL_PATTERNS покрывают типовые русские приветствия и прощания (здравствуй(те), алло, ну пока, до свидания, до встречи, увидимся и др.).
+---
 
-```bash
-python -m src.rule_based_intent \
-  --fit-input data/processed/gold_dialogues.jsonl \
-  --predict-input data/processed/gold_dialogues.jsonl \
-  --lexicon-output data/processed/rule_lexicon.json \
-  --predictions-output artifacts/rule_based_predictions.jsonl \
-  --metrics-output artifacts/rule_based_metrics.json
+## 3. Используемые файлы проекта
+
+```text
+src/preprocess_gold.py          # подготовка gold_dialogues.jsonl из Excel
+src/rule_based_intent.py        # rule-based извлечение opening/closing
+src/ml_intent.py                # TF-IDF + sklearn ML-классификатор
+src/train_intent_model.py       # обучение ML-модели
+src/predict_intent_model.py     # инференс ML-модели на JSONL-репликах
+src/compare_classifiers.py      # сравнение LR/SVM/NB/SGD/Ridge
+src/pipeline.py                 # основной validation/test pipeline
+src/utterance_builder.py        # сборка реплик из ASR + diarization
+src/speaker_id.py               # Resemblyzer speaker identification
+src/pair_formatter.py           # агрегация predictions в opening/closing
+src/export_detailed_pairs.py    # экспорт плоской таблицы событий
+src/export_validation_gold.py   # экспорт gold.xlsx для validation
+src/evaluate.py                 # оценка JSONL-предсказаний на уровне реплик
+src/asr.py                      # faster-whisper ASR
+src/diarization.py              # pyannote diarization
+src/chunk_film.py               # разбиение фильма на чанки
+src/extract_audio_profile.py    # извлечение голосовых профилей через ffmpeg
+src/validation_io.py            # чтение validation-листа Excel
+```
+
+Ноутбуки:
+
+```text
+notebooks/google_colab_asr_pipeline.ipynb
+notebooks/google_colab_diarization_pipeline_venv.ipynb
+notebooks/google_colab_asr_pipeline_test_film.ipynb
+notebooks/google_colab_diarization_pipeline_venv_test_film.ipynb
+notebooks/validation_postprocess_and_evaluation_local.ipynb
+notebooks/evaluation.ipynb
 ```
 
 ---
 
-### Шаг 4. Подготовить слой работы с validation Excel
+## 4. Основные компоненты
 
-**Статус:** выполнен.
+### 4.1. Gold-разметка
 
-**Файлы этапа:**
-- `src/validation_io.py`
-- `src/export_validation_gold.py`
+`src.preprocess_gold` извлекает из листа `Диалоги` реплики с тегами `<opening>` и `<closing>` и сохраняет их в JSONL.
 
-```bash
-python -m src.export_validation_gold \
-  --input data/raw/gold/data_val.xlsx \
-  --output artifacts/validation_status_svoboden/gold.xlsx
+Рабочий объём обучающих данных:
+
+```text
+1170 реплик из 18 фильмов
+413 contact_open
+175 contact_close
+582 none
 ```
 
----
+### 4.2. Rule-based компонент
 
-### Шаг 5–6. ASR и diarization
+Файл: `src/rule_based_intent.py`.
 
-**Статус:** выполнены на Colab; артефакты хранятся локально.
+Компонент использует:
 
-**Файлы этапа:**
-Сначала работаем с ASR notebook:
-- `notebooks/google_colab_asr_pipeline.ipynb`
-Затем с Diarization notebook:
-- `notebooks/google_colab_diarization_pipeline_venv.ipynb`
+- лексикон, извлечённый из gold-разметки;
+- сильные и слабые маркеры opening/closing;
+- `MANUAL_PATTERNS` — регулярные выражения для устойчивых или важных конструкций.
 
-**Артефакты:**
-- `artifacts/validation_status_svoboden_asr_diarization_colab/windows/val_NNN_YYYYY/`
-  - `audio.wav`, `transcript.json`, `diarization.json`
+В текущем коде ручные паттерны не разделяются на уровни надёжности. В combined-режиме все правила из `OPEN_MANUAL_RULES` и `CLOSE_MANUAL_RULES` освобождаются от ML-фильтра.
 
----
+Примеры ручных паттернов:
 
-### Шаг 7–8. Сборка реплик и speaker identification
-
-**Статус:** реализованы в `src/utterance_builder.py` и `src/speaker_id.py`.
-
-- `--diarization-segment-mode regular` — использовать `regular_segments` из diarization.json (исправляет коллапс спикеров в 6 validation-окнах).
-- Resemblyzer, порог сходства 0.65, мин. длительность аудио на спикера 1.5 с.
-- Голосовые профили персонажей: `data/raw/validation/audio_profiles/`.
-
----
-
-### Шаг 9. Формирование пар `opening` / `closing` — validation pipeline
-
-**Статус:** выполнен и воспроизводим.
-
-**Файлы этапа:**
-- `src/pair_formatter.py`
-- `src/pipeline.py`
-- `notebooks/validation_postprocess_and_evaluation_local.ipynb`
-- `artifacts/eval_comparison.json` — сравнение метрик по всем версиям
-
-**Текущие метрики (validation_status_svoboden_local_postprocess_v11, combined mode):**
-| Набор    | P     | R     | F1    | matched | exact |
-|----------|-------|-------|-------|---------|-------|
-| all      | 0.231 | 0.250 | 0.240 | 34      | 8     |
-| opening  | 0.278 | 0.250 | 0.263 | 27      | 7     |
-| closing  | 0.125 | 0.250 | 0.167 | 7       | 1     |
-
-Метрики ограничены качеством speaker attribution (Resemblyzer). Лучший результат достигается при `--intent-mode combined`, `--similarity-threshold 0.48`, `--ml-confidence-threshold 0.35`. Дальнейший тюнинг на validation нецелесообразен — переходим к тестовому фильму.
-
-**Полный validation pipeline:**
-```bash
-python -m src.pipeline \
-  --gold-excel data/raw/gold/data_val.xlsx \
-  --fit-input data/processed/gold_dialogues.jsonl \
-  --validation-dir data/raw/validation \
-  --media-input data/raw/validation/status_svoboden.mkv \
-  --samples-dir data/raw/validation/audio_profiles \
-  --output-dir artifacts/validation_status_svoboden_local_postprocess_vN \
-  --diarization-segment-mode regular \
-  --skip-asr --skip-diarization \
-  --transcript-input-dir artifacts/validation_status_svoboden_asr_diarization_colab/windows \
-  --diarization-input-dir artifacts/validation_status_svoboden_asr_diarization_colab/windows \
-  --hf-token YOUR_HF_TOKEN
+```text
+здравствуй / здравствуйте
+алло
+до свидания
+до встречи
+увидимся
+пока-пока
+давайте познакомимся
+желаете что-нибудь
+я пошёл
+буду через полчаса
 ```
 
----
+### 4.3. ML-компонент
 
-### Шаг 10. ML-классификатор намерений
+Файлы:
 
-**Статус:** реализован, обучен, интегрирован в pipeline (combined mode).
+```text
+src/ml_intent.py
+src/train_intent_model.py
+src/predict_intent_model.py
+```
 
-**Файлы этапа:**
-- `src/ml_intent.py` — TF-IDF (char n-gram 2-5) + sklearn-классификатор; признаки: текст реплики, относительная позиция в диалоге, маркеры контакта в соседних репликах (контекстные признаки)
-- `src/train_intent_model.py` — CLI для обучения; поддерживает `--classifier lr|svm|nb|sgd|ridge`
-- `src/compare_classifiers.py` — сравнение всех классификаторов на validation-выборке
-- `src/predict_intent_model.py` — CLI для инференса на JSONL-репликах
-- `src/evaluate.py` — оценка предсказаний против gold на уровне реплик
+Модель:
 
-**Обучение (Ridge — лучший по F1 на validation):**
+```text
+TF-IDF по символьным n-граммам 2–5 + sklearn-классификатор
+```
+
+Поддерживаемые классификаторы:
+
+```text
+lr | svm | nb | sgd | ridge
+```
+
+Для финального рабочего запуска используется Ridge-модель, обученная через:
+
 ```bash
 python -m src.train_intent_model \
   --fit-input data/processed/gold_dialogues.jsonl \
@@ -246,190 +183,315 @@ python -m src.train_intent_model \
   --classifier ridge
 ```
 
-**Сравнение классификаторов:**
+Признаки ML-модели:
+
+- текст реплики;
+- символьные n-граммы;
+- относительная позиция реплики в диалоге;
+- длина реплики;
+- флаги начала/конца диалога;
+- маркеры opening/closing в предыдущей и следующей реплике.
+
+### 4.4. Combined-режим
+
+Функция: `_run_intent_extraction()` в `src/pipeline.py`.
+
+Логика текущего combined-режима:
+
+1. Rule-based и ML запускаются на одних и тех же репликах.
+2. ML-предсказания ниже `--ml-confidence-threshold` отбрасываются.
+3. Rule-based предсказание сохраняется, если:
+   - ML предсказал тот же `intent_type` для той же `utterance_id`, или
+   - сработало ручное правило из `OPEN_MANUAL_RULES` / `CLOSE_MANUAL_RULES`.
+4. ML-предсказания добавляются, если такая пара `(utterance_id, intent_type)` ещё не была добавлена rule-based компонентом.
+5. Если одна реплика получила одновременно `contact_open` и `contact_close`, то rule-based предсказание удаляется только в случае, когда ML уверенно дал противоположный тип.
+
+То есть combined-режим в текущем коде — это не простое объединение rule-based и ML, а объединение с ML-фильтрацией rule-based результатов и исключением для ручных правил.
+
+### 4.5. Speaker identification
+
+Файл: `src/speaker_id.py`.
+
+Используется Resemblyzer:
+
+```text
+VoiceEncoder → embedding → cosine similarity
+```
+
+Порог принятия персонажа задаётся параметром:
+
+```text
+--similarity-threshold
+```
+
+Для validation-оценки использовался порог `0.48`.
+
+Если лучший кандидат ниже порога, speaker получает техническую метку `unknown_speaker`, которая при экспорте заменяется на значение `--unknown-speaker-name`, обычно `unknown`.
+
+---
+
+## 5. Пошаговое воспроизведение через bash
+
+Команды ниже рассчитаны на запуск из корня репозитория.
+
+### Шаг 1. Подготовить gold JSONL
+
+```bash
+python -m src.preprocess_gold \
+  --input data/raw/gold/data_val.xlsx \
+  --sheet-name "Диалоги" \
+  --output data/processed/gold_dialogues.jsonl \
+  --stats-output data/processed/gold_stats.json \
+  --skipped-output data/processed/gold_skipped_lines.json
+```
+
+### Шаг 2. Построить rule-based лексикон и проверить baseline
+
+```bash
+python -m src.rule_based_intent \
+  --fit-input data/processed/gold_dialogues.jsonl \
+  --predict-input data/processed/gold_dialogues.jsonl \
+  --lexicon-output data/processed/rule_lexicon.json \
+  --predictions-output artifacts/rule_based_predictions.jsonl \
+  --metrics-output artifacts/rule_based_metrics.json \
+  --min-freq 1
+```
+
+### Шаг 3. Обучить ML-модель
+
+```bash
+python -m src.train_intent_model \
+  --fit-input data/processed/gold_dialogues.jsonl \
+  --model-output data/models/intent_classifier.joblib \
+  --stats-output data/models/train_stats.json \
+  --classifier ridge
+```
+
+### Шаг 4. Опционально сравнить классификаторы
+
 ```bash
 python -m src.compare_classifiers \
   --fit-input data/processed/gold_dialogues.jsonl \
   --gold-excel data/raw/gold/data_val.xlsx \
   --transcript-dir artifacts/validation_status_svoboden_asr_diarization_colab/windows \
   --samples-dir data/raw/validation/audio_profiles \
-  --output artifacts/classifier_comparison.json
+  --output artifacts/classifier_comparison.json \
+  --classifiers lr svm nb sgd ridge \
+  --cv-folds 5
 ```
 
-**Инференс на репликах:**
-```bash
-python -m src.predict_intent_model \
-  --model data/models/intent_classifier.joblib \
-  --input utterances.jsonl \
-  --output predictions.jsonl
+### Шаг 5. Получить ASR и diarization
+
+ASR и diarization выполняются в Colab-ноутбуках:
+
+```text
+notebooks/google_colab_asr_pipeline.ipynb
+notebooks/google_colab_diarization_pipeline_venv.ipynb
 ```
 
-**Оценка предсказаний против gold:**
-```bash
-python -m src.evaluate \
-  --gold data/processed/gold_dialogues.jsonl \
-  --predictions artifacts/ml_predictions.jsonl \
-  --output artifacts/eval_ml_metrics.json
+После выполнения ноутбуков локально должна существовать папка:
+
+```text
+artifacts/validation_status_svoboden_asr_diarization_colab/windows/
 ```
 
-**Интеграция в pipeline** через `--intent-mode`:
+В каждом окне должны быть как минимум:
+
+```text
+transcript.json
+diarization.json
+audio.wav
+```
+
+### Шаг 6. Запустить validation pipeline
+
 ```bash
 python -m src.pipeline \
-  ... \
-  --intent-mode ml \
-  --ml-model data/models/intent_classifier.joblib
-
-# или combined (rule-based + ML, rule-based имеет приоритет):
-python -m src.pipeline \
-  ... \
+  --gold-excel data/raw/gold/data_val.xlsx \
+  --validation-sheet "Вал - Статус свободен" \
+  --fit-input data/processed/gold_dialogues.jsonl \
+  --validation-dir data/raw/validation \
+  --media-input data/raw/validation/status_svoboden.mkv \
+  --samples-dir data/raw/validation/audio_profiles \
+  --output-dir artifacts/validation_status_svoboden_local_postprocess_v11 \
+  --extracted-pairs-output artifacts/validation_status_svoboden_local_postprocess_v11/extracted_pairs.xlsx \
+  --gold-output artifacts/validation_status_svoboden_local_postprocess_v11/gold.xlsx \
+  --transcript-input-dir artifacts/validation_status_svoboden_asr_diarization_colab/windows \
+  --diarization-input-dir artifacts/validation_status_svoboden_asr_diarization_colab/windows \
+  --skip-asr \
+  --skip-diarization \
+  --device cpu \
+  --min-freq 1 \
+  --min-sample-duration-sec 0.5 \
+  --min-utterance-duration-sec 0.7 \
+  --min-total-duration-sec 0.8 \
+  --max-total-duration-sec 45.0 \
+  --max-pause-within-utterance-sec 0.8 \
+  --max-total-utterance-duration-sec 20.0 \
+  --max-nonoverlap-assign-distance-sec 1.0 \
+  --similarity-threshold 0.48 \
+  --top-k-candidates 3 \
+  --unknown-speaker-label unknown_speaker \
+  --unknown-speaker-name unknown \
+  --diarization-segment-mode regular \
   --intent-mode combined \
-  --ml-model data/models/intent_classifier.joblib
+  --ml-model data/models/intent_classifier.joblib \
+  --ml-confidence-threshold 0.35
 ```
 
----
-
-### Шаг 11. Тестовый фильм «Питер FM»
-
-**Статус:** выполнен полностью.
-
-**Входные данные:** только видео/аудио `data/raw/test/Peter_FM_2006.mkv` (без gold).
-
-**Голосовые профили** (14 персонажей) хранятся локально в `data/raw/test/audio_profile/` (не в git).
-Для воспроизведения: запустить команды из `Peter_FM_audio_prompt.txt` через `src/extract_audio_profile.py`.
-Персонажи: Маша Емельянова, Максим Васильев, Лерыч, Костя, Немец-контрактор, Марина, Татьяна Петровна, Директор радио (Феликс), Дима-бедуин, Управдом, Майор Горобец, Генерал Пётр Ефимыч, Петя (Друг Макса 1), Мужик на скамейке.
-
-**Шаги:**
-1. **[выполнен]** Извлечь голосовые профили персонажей с помощью команд из `Peter_FM_audio_prompt.txt`.
-2. **[выполнен]** Разбить фильм на чанки по 10 минут:
-   ```bash
-   python -m src.chunk_film \
-     --input data/raw/test/Peter_FM_2006.mkv \
-     --output-dir artifacts/test_piter_fm_asr_diarization_colab/windows \
-     --chunk-duration 600
-   ```
-3. **[выполнен]** Запустить ASR на Colab (`notebooks/google_colab_asr_pipeline_test_film.ipynb`).
-4. **[выполнен]** Запустить diarization на Colab (`notebooks/google_colab_diarization_pipeline_venv_test_film.ipynb`).
-5. **[выполнен]** Запустить постпроцессинг локально:
-   ```bash
-   python -m src.pipeline \
-     --scan-windows \
-     --transcript-input-dir artifacts/test_piter_fm_asr_diarization_colab/windows \
-     --diarization-input-dir artifacts/test_piter_fm_asr_diarization_colab/windows \
-     --samples-dir data/raw/test/audio_profile \
-     --output-dir artifacts/test_piter_fm \
-     --extracted-pairs-output artifacts/test_piter_fm/extracted_pairs.xlsx \
-     --diarization-segment-mode regular \
-     --intent-mode combined \
-     --ml-model data/models/intent_classifier.joblib \
-     --ml-confidence-threshold 0.35 \
-     --similarity-threshold 0.48 \
-     --skip-asr --skip-diarization \
-     --fit-input data/processed/gold_dialogues.jsonl
-   ```
-6. **[выполнен]** Экспортировать плоскую таблицу событий:
-   ```bash
-   python -m src.export_detailed_pairs \
-     --output-dir artifacts/test_piter_fm \
-     --source-dir artifacts/test_piter_fm_asr_diarization_colab/windows \
-     --film-name "Питер FM" \
-     --exclude-chunk 9 \
-     --excel artifacts/test_piter_fm/detailed_pairs.xlsx
-   ```
-   Результат — `artifacts/test_piter_fm/detailed_pairs.xlsx`: колонки `ID | Фильм | Время начала | Время окончания | Тип | Аннотация | opening | closing`.
-
----
-
-## Настройка Google Drive для Colab
-
-Ноутбуки ASR и diarization монтируют Google Drive и ожидают следующую структуру папок:
+Основные результаты команды:
 
 ```text
-MyDrive/
-└── AudioIntent/
-    ├── notebooks/                             # клонировать из репозитория
-    │   ├── google_colab_asr_pipeline_test_film.ipynb
-    │   └── google_colab_diarization_pipeline_venv_test_film.ipynb
-    └── data/
-        ├── raw/
-        │   └── test/
-        │       ├── Peter_FM_2006.mkv          # видеофайл фильма
-        │       └── audio_profile/             # голосовые профили (14 папок с WAV)
-        ├── processed/
-        │   └── gold_dialogues.jsonl           # подготовить локально (шаг 2)
-        └── artifacts/
-            └── test_piter_fm_asr_diarization_colab/  # создаётся автоматически при ASR
-                └── windows/
-                    ├── chunk_000/
-                    │   ├── audio.wav
-                    │   ├── chunk_info.json
-                    │   └── transcript.json    # записывается ASR-ноутбуком
-                    └── ...
+artifacts/validation_status_svoboden_local_postprocess_v11/extracted_pairs.xlsx
+artifacts/validation_status_svoboden_local_postprocess_v11/gold.xlsx
+artifacts/validation_status_svoboden_local_postprocess_v11/run_summary.json
+artifacts/validation_status_svoboden_local_postprocess_v11/windows/*/predictions.jsonl
 ```
 
-**Что нужно загрузить вручную перед запуском:**
-- `Peter_FM_2006.mkv` — видеофайл (~466 МБ)
-- `audio_profile/` — голосовые профили (~10 МБ, 14 папок)
-- `gold_dialogues.jsonl` — подготовить локально командой из шага 2 и загрузить (~1 МБ)
+### Шаг 7. Оценить validation-результат
 
-**Что создаётся автоматически:**
-- `artifacts/test_piter_fm_asr_diarization_colab/windows/` — чанки + транскрипты создаются ASR-ноутбуком (~170 МБ)
-- `diarization.json` в каждый чанк записывает diarization-ноутбук (~5 МБ суммарно)
+Для Excel-оценки используется ноутбук:
 
-**Необходимый объём свободного места на Google Drive:** не менее 1 ГБ.
+```text
+notebooks/validation_postprocess_and_evaluation_local.ipynb
+```
 
-**HuggingFace token** для ноутбуков нужно получить токен на [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens); модель `pyannote/speaker-diarization-community-1` требует принятия условий использования на странице модели. В Google Colab нужно нажать на ключ в левой панели (`Secrets`) и добавить токен, а затем разрешить доступ (`Notebook Access`).
+или `notebooks/evaluation.ipynb`, если нужно сравнить `gold.xlsx` и `extracted_pairs.xlsx` в формате evaluation.
+
+### Шаг 8. Разбить тестовый фильм на чанки
+
+```bash
+python -m src.chunk_film \
+  --input data/raw/test/Peter_FM_2006.mkv \
+  --output-dir artifacts/test_piter_fm_asr_diarization_colab/windows \
+  --chunk-duration 600 \
+  --sample-rate 16000 \
+  --force
+```
+
+### Шаг 9. Запустить ASR и diarization для тестового фильма
+
+В Colab используются ноутбуки:
+
+```text
+notebooks/google_colab_asr_pipeline_test_film.ipynb
+notebooks/google_colab_diarization_pipeline_venv_test_film.ipynb
+```
+
+Ожидаемая папка после их выполнения:
+
+```text
+artifacts/test_piter_fm_asr_diarization_colab/windows/
+```
+
+### Шаг 10. Запустить постпроцессинг тестового фильма
+
+```bash
+python -m src.pipeline \
+  --scan-windows \
+  --fit-input data/processed/gold_dialogues.jsonl \
+  --samples-dir data/raw/test/audio_profile \
+  --output-dir artifacts/test_piter_fm \
+  --extracted-pairs-output artifacts/test_piter_fm/extracted_pairs.xlsx \
+  --transcript-input-dir artifacts/test_piter_fm_asr_diarization_colab/windows \
+  --diarization-input-dir artifacts/test_piter_fm_asr_diarization_colab/windows \
+  --skip-asr \
+  --skip-diarization \
+  --device cpu \
+  --min-freq 1 \
+  --min-sample-duration-sec 0.5 \
+  --min-utterance-duration-sec 0.7 \
+  --min-total-duration-sec 0.8 \
+  --max-total-duration-sec 45.0 \
+  --max-pause-within-utterance-sec 0.8 \
+  --max-total-utterance-duration-sec 20.0 \
+  --max-nonoverlap-assign-distance-sec 1.0 \
+  --similarity-threshold 0.48 \
+  --top-k-candidates 3 \
+  --unknown-speaker-label unknown_speaker \
+  --unknown-speaker-name unknown \
+  --diarization-segment-mode regular \
+  --intent-mode combined \
+  --ml-model data/models/intent_classifier.joblib \
+  --ml-confidence-threshold 0.35
+```
+
+### Шаг 11. Экспортировать `detailed_pairs.xlsx`
+
+```bash
+python -m src.export_detailed_pairs \
+  --output-dir artifacts/test_piter_fm \
+  --source-dir artifacts/test_piter_fm_asr_diarization_colab/windows \
+  --film-name "Питер FM" \
+  --exclude-chunk 9 \
+  --excel artifacts/test_piter_fm/detailed_pairs.xlsx
+```
+
+Итоговый файл:
+
+```text
+artifacts/test_piter_fm/detailed_pairs.xlsx
+```
 
 ---
 
-## Структура проекта
+## 6. Validation-результат рабочей конфигурации
+
+Validation-фильм: `Статус: свободен`, 28 окон, 48 gold-событий.
+
+| Режим | Pred | Jaccard | Precision | Recall | F1 | matched | exact |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Rule-based | 28 | 0.169 | 0.393 | 0.229 | 0.290 | 18 | 6 |
+| ML only | 42 | 0.098 | 0.190 | 0.167 | 0.178 | 22 | 6 |
+| Combined | 52 | 0.136 | 0.231 | 0.250 | 0.240 | 34 | 8 |
+
+Рабочим выбран combined-режим, потому что он даёт наибольшее число найденных совпадений (`matched=34`) и больший recall, хотя rule-based отдельно имеет более высокий scalar F1.
+
+---
+
+## 7. Структура ожидаемых артефактов
 
 ```text
-.
-├── artifacts/                            # генерируется при запуске, в git только .gitkeep
-│   ├── eval_comparison.json              # сравнение метрик по всем версиям
-│   ├── validation_status_svoboden_asr_diarization_colab/  # ASR + diarization (Colab)
-│   ├── validation_status_svoboden_local_postprocess_vN/   # постпроцессинг (локально, версия vN)
-│   │   ├── extracted_pairs.xlsx
-│   │   ├── gold.xlsx
-│   │   ├── eval_metrics.json
-│   │   └── windows/
-│   ├── test_piter_fm_asr_diarization_colab/               # ASR + diarization тест (Colab)
-│   └── test_piter_fm/                                     # постпроцессинг тест (локально)
-│       ├── extracted_pairs.xlsx
-│       └── detailed_pairs.xlsx
-├── configs/
-├── data/
-│   ├── raw/
-│   │   ├── gold/                         # data_val.xlsx
-│   │   ├── validation/                   # audio + audio_profiles
-│   │   └── test/                         # Питер FM видео/аудио + audio_profile/
-│   ├── interim/
-│   ├── models/                           # intent_classifier.joblib
-│   └── processed/
-│       ├── gold_dialogues.jsonl          # 1170 реплик для обучения
-│       └── gold_stats.json
-├── notebooks/
-│   ├── evaluation.ipynb                          # оценка метрик на validation-выборке
-│   ├── validation_postprocess_and_evaluation_local.ipynb
-│   ├── google_colab_asr_pipeline.ipynb           # ASR на Colab (validation)
-│   ├── google_colab_asr_pipeline_test_film.ipynb # ASR на Colab (тестовый фильм)
-│   ├── google_colab_diarization_pipeline_venv.ipynb          # diarization (validation)
-│   └── google_colab_diarization_pipeline_venv_test_film.ipynb # diarization (тест)
-└── src/
-    ├── pipeline.py                       # главный orchestrator
-    ├── rule_based_intent.py              # rule-based извлечение
-    ├── ml_intent.py                      # ML-классификатор (TF-IDF + LR)
-    ├── train_intent_model.py             # CLI обучения ML-модели
-    ├── predict_intent_model.py           # CLI инференса ML-модели
-    ├── evaluate.py                       # CLI оценки предсказаний
-    ├── pair_formatter.py                 # агрегация в opening/closing
-    ├── speaker_id.py                     # Resemblyzer speaker attribution
-    ├── utterance_builder.py              # сборка реплик из ASR+diarization
-    ├── validation_io.py                  # чтение validation Excel
-    ├── asr.py                            # faster-whisper ASR
-    ├── diarization.py                    # pyannote diarization
-    ├── chunk_film.py                     # разбивка фильма на чанки для тестового пайплайна
-    ├── extract_audio_profile.py          # извлечение голосовых профилей из видео (ffmpeg)
-    ├── export_detailed_pairs.py          # экспорт плоской таблицы событий в Excel
-    └── compare_classifiers.py            # сравнение ML-классификаторов на validation-выборке
+artifacts/
+├── validation_status_svoboden_asr_diarization_colab/
+│   └── windows/
+│       └── val_.../
+│           ├── audio.wav
+│           ├── transcript.json
+│           └── diarization.json
+├── validation_status_svoboden_local_postprocess_v11/
+│   ├── extracted_pairs.xlsx
+│   ├── gold.xlsx
+│   ├── run_summary.json
+│   ├── rule_lexicon.json
+│   ├── character_profiles.json
+│   └── windows/
+│       └── val_.../
+│           ├── utterances.jsonl
+│           ├── utterances_named.jsonl
+│           ├── speaker_assignments.json
+│           ├── predictions.jsonl
+│           └── summary.json
+├── test_piter_fm_asr_diarization_colab/
+│   └── windows/
+│       └── chunk_.../
+│           ├── audio.wav
+│           ├── transcript.json
+│           ├── diarization.json
+│           └── chunk_info.json
+└── test_piter_fm/
+    ├── extracted_pairs.xlsx
+    ├── detailed_pairs.xlsx
+    ├── run_summary.json
+    └── windows/
 ```
+
+---
+
+## 8. Важные замечания по воспроизведению
+
+- В `src/pipeline.py` значения по умолчанию не равны рабочей конфигурации. Для воспроизведения результата нужно явно передавать `--intent-mode combined`, `--ml-confidence-threshold 0.35`, `--similarity-threshold 0.48` и `--diarization-segment-mode regular`.
+- При `--skip-asr --skip-diarization` Hugging Face token не нужен, потому что diarization не запускается заново.
+- `--diarization-segment-mode regular` важен: он берёт `regular_segments` из `diarization.json`, если они есть.
+- `src.evaluate.py` оценивает JSONL-предсказания на уровне обучающих реплик, а Excel-оценка validation-файлов выполняется через ноутбуки.
+- Файл `detailed_pairs.xlsx` не создаётся основным pipeline автоматически; его создаёт отдельная команда `src.export_detailed_pairs`.
