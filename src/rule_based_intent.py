@@ -87,6 +87,56 @@ CLOSE_MANUAL_RULES = {
     "udachi_generic",
 }
 
+# ---------------------------------------------------------------------------
+# Трёхуровневая система надёжности manual rules.
+#
+# Tier A — однозначные, не требуют подтверждения ML.
+# Tier B — контекстно-зависимые, рекомендуется ML-подтверждение.
+# Tier C — слабые / опасные паттерны, обязательно ML-подтверждение.
+# ---------------------------------------------------------------------------
+
+MANUAL_RULES_TIER_A: frozenset[str] = frozenset({
+    # Специфичные для фильма (однозначный смысл)
+    "where_have_i_seen_you",
+    "would_you_like_anything",
+    "can_i_join_you_for_a_drink",
+    "is_that_you_nikita",
+    "withdraw_from_competition",
+    "do_not_disturb",
+    "i_am_leaving",
+    "call_me_later",
+    "be_there_soon",
+    "wait_at_time",
+    # Однозначные приветствия
+    "lets_get_acquainted",
+    "privetstvuyu",
+    "dobro_pozhalovat",
+    # Однозначные прощания
+    "do_svidaniya_generic",
+    "vsego_dobrogo",
+    "uvidimsya",
+    "poka_poka",
+    "bye_chao",
+    "do_vstrechi",
+})
+
+MANUAL_RULES_TIER_B: frozenset[str] = frozenset({
+    # Контекстно-зависимые — «алло» может быть и приветствием, и просто возгласом
+    "allo_generic",
+    # «Здравствуй» чёткое слово, но без контекста иногда неоднозначно
+    "zdravstvuy_generic",
+    # «Ну, пока» и «счастливо» — прощания, но встречаются в нейтральных контекстах
+    "nu_poka",
+    "schastlivo_generic",
+})
+
+MANUAL_RULES_TIER_C: frozenset[str] = frozenset({
+    # Опасные слабые паттерны — высокий риск false positives
+    "nu_vse",       # «ну, всё» слишком часто вне контекста прощания
+    "davay_poka",   # «давай, пока» — правдоподобное прощание, но «давай» шумный маркер
+    "udachi_generic",  # «удачи» — частое пожелание вне прощания
+})
+
 # Эти маркеры часто появляются в лексиконе из-за шумных / слишком узких gold-спанов.
 # Считать их крайне неоднозначными при использовании как самостоятельных opening-правил.
 AMBIGUOUS_OPEN_RULES = {
