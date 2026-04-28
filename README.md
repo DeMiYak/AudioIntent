@@ -439,6 +439,8 @@ artifacts/test_piter_fm/detailed_pairs.xlsx
 
 Validation-фильм: `Статус: свободен`, 28 окон, 48 gold-событий.
 
+Результаты получены для версии **v11** (`--intent-mode combined`, `--ml-confidence-threshold 0.35`, `--similarity-threshold 0.48`, `--diarization-segment-mode regular`) с ML-классификатором **RidgeClassifier + CalibratedClassifierCV**.
+
 | Режим | Pred | Jaccard | Precision | Recall | F1 | matched | exact |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Rule-based | 28 | 0.169 | 0.393 | 0.229 | 0.290 | 18 | 6 |
